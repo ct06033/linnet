@@ -1,0 +1,26 @@
+{
+  "name": "@linnet/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "electron .",
+    "test": "echo \"no desktop tests in wave 1\" && exit 0",
+    "dist": "electron-builder --linux --win"
+  },
+  "dependencies": {
+    "@linnet/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "electron": "^44.1.0",
+    "electron-builder": "^26.0.12",
+    "typescript": "^5.9.3"
+  },
+  "description": "Linnet desktop \u2014 a Matrix client between Element and Cinny",
+  "author": "Linnet contributors",
+  "license": "AGPL-3.0-only",
+  "homepage": "https://github.com/ct06033/linnet"
+}

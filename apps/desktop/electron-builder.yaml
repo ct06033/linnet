@@ -1,0 +1,40 @@
+# electron-builder config — wave 1: Windows + Linux only (PRD §4, desktop-first).
+# macOS intentionally NOT configured; scripts/validate-builder-config.mjs enforces this.
+# NOTE: not executed in wave 1 (CI runs vite builds only); this file is scaffold + future packaging contract.
+appId: chat.linnet.desktop
+productName: Linnet
+# electron must not derive it from the scoped npm name (@linnet/desktop -> "@linnetdesktop")
+executableName: linnet
+copyright: "Copyright (C) Linnet contributors — AGPL-3.0-only"
+
+directories:
+  output: dist
+
+files:
+  - dist-electron/**
+  - package.json
+
+artifactName: ${productName}-${version}-${os}-${arch}.${ext}
+
+extraResources:
+  - from: ../../packages/app/dist
+    to: renderer
+  # config.json deployment: drop <resourcesPath>/config.json (see docs/config.md)
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+
+linux:
+  target:
+    - deb
+    - AppImage
+  category: Network
+  maintainer: Linnet contributors
+  synopsis: Matrix chat client between Element and Cinny

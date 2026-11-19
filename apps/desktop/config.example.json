@@ -1,0 +1,6 @@
+{
+  "homeserverUrl": "https://matrix.org",
+  "theme": "system",
+  "experimental": {},
+  "modules": { "disabled": [], "options": {} }
+}

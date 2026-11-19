@@ -1,0 +1,27 @@
+name: CI
+on:
+  push:
+  pull_request:
+
+jobs:
+  workspace:
+    runs-on: ubuntu-latest
+    env:
+      # Wave 1: desktop build = vite bundles for main/preload only. The Electron
+      # binary and electron-builder are never needed for typecheck/test/build.
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # private workspace packages expose their types via dist, so build (topological)
+      # must precede typecheck/test of dependents
+      - run: pnpm -r build
+      - run: pnpm -r typecheck
+      - run: pnpm -r test
+      - run: node scripts/validate-builder-config.mjs
+      - run: node scripts/perf-harness/bench.mjs

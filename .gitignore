@@ -1,0 +1,9 @@
+node_modules/
+dist/
+dist-electron/
+out/
+coverage/
+*.log
+.DS_Store
+.env
+linnet-deviceb-*.mjs

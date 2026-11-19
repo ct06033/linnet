@@ -10,15 +10,17 @@ import { readConfig } from "./bridge.js";
 import { getSessionManager } from "./session-context.js";
 import { Login } from "./screens/Login.js";
 import { RoomView } from "./modules/messages/RoomView.js";
-
-const SPACES = ["Home", "Family", "Work", "Hobby"];
+import { SpaceRail } from "./modules/spaces/SpaceRail.js";
+import { addableRooms, homeRooms, spaceEntries, spacesForRail } from "./modules/spaces/tree.js";
+import { addRoomToSpace, createSpace, removeRoomFromSpace } from "./modules/spaces/actions.js";
 
 export function App(): ReactNode {
   const sm = getSessionManager();
   const [registry, setRegistry] = useState<ModuleRegistry | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const [space, setSpace] = useState("Home");
+  const [spaceId, setSpaceId] = useState<string | null>(null);
+  const [addOpen, setAddOpen] = useState(false);
   const [phase, setPhase] = useState<"boot" | "login" | "ready">("boot");
   const [accounts, setAccounts] = useState<AccountMetadata[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -72,6 +74,8 @@ export function App(): ReactNode {
     setActiveId(id);
     setRooms([]);
     setSelectedRoom(null);
+    setSpaceId(null);
+    setAddOpen(false);
     setMenuOpen(false);
   }
 
@@ -92,7 +96,12 @@ export function App(): ReactNode {
 
   const dmRooms = rooms.filter((r) => r.isDM && !r.invite);
   const invites = rooms.filter((r) => r.invite);
-  const plainRooms = rooms.filter((r) => !r.isDM && !r.invite);
+  // W5b: selected space falls back to Home if left/forgotten (S8)
+  const activeSpace = spaceId ? rooms.find((r) => r.roomId === spaceId && r.isSpace && !r.invite) ?? null : null;
+  const activeSpaceId = activeSpace?.roomId ?? null;
+  const homeList = homeRooms(rooms).filter((r) => !r.isDM && !r.invite);
+  const entries = activeSpace ? spaceEntries(activeSpace.roomId, rooms) : [];
+  const addable = activeSpace ? addableRooms(activeSpace.roomId, rooms) : [];
 
   if (phase === "boot") {
     return <div className="boot">restoring sessions…</div>;
@@ -145,27 +154,96 @@ export function App(): ReactNode {
             </button>
           </div>
         )}
-        {SPACES.map((s) => (
-          <button key={s} className={`space${s === space ? " active" : ""}`} onClick={() => setSpace(s)}>
-            {s}
-          </button>
-        ))}
+        <SpaceRail
+          spaces={spacesForRail(rooms)}
+          active={activeSpaceId}
+          onSelect={(id) => {
+            setSpaceId(id);
+            setAddOpen(false);
+          }}
+          onCreate={async (name, isPublic) => {
+            if (!clientForView) throw new Error("not signed in");
+            const id = await createSpace(clientForView, { name, isPublic });
+            setSpaceId(id);
+          }}
+        />
       </nav>
 
       <aside className="roomlist" aria-label="Rooms">
-        <h3>People</h3>
-        {dmRooms.length === 0 && <p className="empty">no DMs</p>}
-        {dmRooms.map((r) => (
-          <Row key={r.roomId} r={r} selected={selectedRoom === r.roomId} onSelect={setSelectedRoom} />
-        ))}
-        <h3>Rooms — {space}</h3>
-        {invites.map((r) => (
-          <Row key={r.roomId} r={r} selected={selectedRoom === r.roomId} onSelect={setSelectedRoom} />
-        ))}
-        {plainRooms.map((r) => (
-          <Row key={r.roomId} r={r} selected={selectedRoom === r.roomId} onSelect={setSelectedRoom} />
-        ))}
-        {rooms.length === 0 && <p className="empty">syncing…</p>}
+        {activeSpaceId === null ? (
+          <>
+            <h3>People</h3>
+            {dmRooms.length === 0 && <p className="empty">no DMs</p>}
+            {dmRooms.map((r) => (
+              <Row key={r.roomId} r={r} selected={selectedRoom === r.roomId} onSelect={setSelectedRoom} />
+            ))}
+            <h3>Rooms</h3>
+            {invites.map((r) => (
+              <Row key={r.roomId} r={r} selected={selectedRoom === r.roomId} onSelect={setSelectedRoom} />
+            ))}
+            {homeList.map((r) => (
+              <Row key={r.roomId} r={r} selected={selectedRoom === r.roomId} onSelect={setSelectedRoom} />
+            ))}
+            {rooms.length === 0 && <p className="empty">syncing…</p>}
+          </>
+        ) : (
+          <>
+            <div className="space-head">
+              <h3>{activeSpace?.name}</h3>
+              <button aria-label="Add room to space" onClick={() => setAddOpen((v) => !v)}>
+                + Room
+              </button>
+            </div>
+            {addOpen && (
+              <div className="dialog" role="dialog" aria-label="Add existing room">
+                {addable.length === 0 && <p className="empty">no rooms to add</p>}
+                {addable.map((r) => (
+                  <button
+                    key={r.roomId}
+                    onClick={() => {
+                      if (clientForView && activeSpace) void addRoomToSpace(clientForView, activeSpace.roomId, r.roomId);
+                      setAddOpen(false);
+                    }}
+                  >
+                    {r.name}
+                  </button>
+                ))}
+              </div>
+            )}
+            {entries.map((e) =>
+              e.kind === "room" ? (
+                <Row
+                  key={e.room.roomId}
+                  r={e.room}
+                  selected={selectedRoom === e.room.roomId}
+                  onSelect={setSelectedRoom}
+                  onRemove={
+                    clientForView && activeSpace
+                      ? () => void removeRoomFromSpace(clientForView, activeSpace.roomId, e.room.roomId)
+                      : undefined
+                  }
+                />
+              ) : (
+                <div key={e.space.roomId} className="nested-space">
+                  <h4>{e.space.name}</h4>
+                  {e.rooms.map((r) => (
+                    <Row
+                      key={r.roomId}
+                      r={r}
+                      selected={selectedRoom === r.roomId}
+                      onSelect={setSelectedRoom}
+                    />
+                  ))}
+                </div>
+              ),
+            )}
+            {entries.length === 0 && !addOpen && (
+              <p className="empty">
+                This space is empty — <button onClick={() => setAddOpen(true)}>add rooms</button>
+              </p>
+            )}
+          </>
+        )}
       </aside>
 
       <main className="timeline">
@@ -174,7 +252,7 @@ export function App(): ReactNode {
         ) : (
           <>
             <header>
-              <span>{plainRooms[0]?.name ?? "linnet"}</span>
+              <span>{homeList[0]?.name ?? dmRooms[0]?.name ?? "linnet"}</span>
               <button onClick={() => setPaletteOpen(true)}>Ctrl+K</button>
             </header>
             <p className="placeholder">
@@ -209,12 +287,35 @@ export function App(): ReactNode {
   );
 }
 
-function Row({ r, selected, onSelect }: { r: RoomSummary; selected: boolean; onSelect: (id: string) => void }): ReactNode {
+function Row({
+  r,
+  selected,
+  onSelect,
+  onRemove,
+}: {
+  r: RoomSummary;
+  selected: boolean;
+  onSelect: (id: string) => void;
+  onRemove?: () => void;
+}): ReactNode {
   return (
     <button className={`row${selected ? " selected" : ""}`} onClick={() => onSelect(r.roomId)}>
       <span className="name">{r.name}</span>
       {r.invite && <span className="invite">invite</span>}
       {r.unread > 0 && <span className="pill">{r.unread}</span>}
+      {onRemove && (
+        <span
+          role="button"
+          className="row-x"
+          aria-label={`Remove ${r.name} from space`}
+          onClick={(e) => {
+            e.stopPropagation();
+            onRemove();
+          }}
+        >
+          ✕
+        </span>
+      )}
     </button>
   );
 }

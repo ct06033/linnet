@@ -595,11 +595,11 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
         return jsonRes(s);
       }
       if (method === "PUT") {
-        record("PUT", path, await bodyJson(init));
         const content = await bodyJson(init);
+        record("PUT", path, content);
         roomState(roomId).set(`${type}|${key}`, content);
         const evId = nextEventId();
-        fanout({
+        const stEv: FakeEventLike = {
           type,
           sender: userId,
           state_key: key,
@@ -607,7 +607,11 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
           room_id: roomId,
           event_id: evId,
           origin_server_ts: ++ts,
-        });
+        };
+        // real HS echoes state back to the SENDER too (own-echo drives local
+        // room-state finalization; leave/createRoom do the same)
+        enqueue(userId, { roomId, event: stEv });
+        fanout(stEv, userId);
         return jsonRes({ event_id: evId });
       }
     }

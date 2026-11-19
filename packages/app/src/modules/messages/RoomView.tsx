@@ -36,6 +36,7 @@ import { ThreadPanel } from "./ThreadPanel.js";
 import { Viewer } from "../media/renderers.js";
 import { SecurityBanner, SecuritySheet } from "../security/Security.js";
 import { prodAdapter } from "../security/prod.js";
+import { RoomSettings } from "../settings/RoomSettings.js";
 import type { SecurityStatus } from "../security/state.js";
 import type { TimelineItemProps } from "./renderers.js";
 
@@ -57,6 +58,7 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
   const [viewer, setViewer] = useState<number | null>(null);
   const [secOpen, setSecOpen] = useState(false);
   const [secStatus, setSecStatus] = useState<SecurityStatus | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const pinnedBottom = useRef(true);
 
@@ -301,6 +303,9 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
         <div className="title">
           <span className="room-name">{room?.name ?? roomId}</span>
           <SecurityBanner encrypted={e2ee} status={secStatus} onClick={() => setSecOpen(true)} />
+          <button className="settings-gear" aria-label="Room settings" onClick={() => setSettingsOpen(true)}>
+            ⚙
+          </button>
         </div>
         <div className="sub">
           {topic && <span className="topic">{topic}</span>}
@@ -500,6 +505,9 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
       </div>
       {secOpen && (
         <SecuritySheet client={client} adapter={prodAdapter} onClose={() => setSecOpen(false)} />
+      )}
+      {settingsOpen && (
+        <RoomSettings client={client} roomId={roomId} onClose={() => setSettingsOpen(false)} />
       )}
       {viewer !== null &&
         (() => {

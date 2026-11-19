@@ -153,8 +153,13 @@ export class SessionManager {
     if (!s.started) {
       s.started = true;
       // detached pending ordering → Room.getPendingEvents() works for the
-      // RoomView optimistic echo (chronological throws there — probed 45.1)
-      s.client.startClient({ initialSyncLimit: 20, pendingEventOrdering: PendingEventOrdering.Detached });
+      // RoomView optimistic echo; threadSupport organises MSC3440 relations
+      // into Room.getThreads() (both are startClient opts in js-sdk 45 — probed)
+      s.client.startClient({
+        initialSyncLimit: 20,
+        pendingEventOrdering: PendingEventOrdering.Detached,
+        threadSupport: true,
+      });
     }
   }
 

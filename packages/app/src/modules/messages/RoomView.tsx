@@ -24,11 +24,13 @@ import {
   bodyOf,
   displayNameOf,
   groupEvents,
+  isThreadReply,
   kindOf,
   latestEdits,
   replyTargetId,
 } from "./model.js";
 import { Composer, type ComposerMode } from "./Composer.js";
+import { ThreadPanel } from "./ThreadPanel.js";
 import type { TimelineItemProps } from "./renderers.js";
 
 export interface RoomViewProps {
@@ -44,6 +46,7 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
   const [lastAck, setLastAck] = useState<{ eventId: string; ts: number } | null>(null);
   const [paginating, setPaginating] = useState(false);
   const [joined, setJoined] = useState(true);
+  const [openThread, setOpenThread] = useState<string | null>(null);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const pinnedBottom = useRef(true);
 
@@ -52,6 +55,7 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
   useEffect(() => {
     setMode({ kind: "send" });
     setLastAck(null);
+    setOpenThread(null);
     const room = client.getRoom(roomId);
     setJoined(!room || room.getMyMembership() === "join");
     const onTimeline = (ev: MatrixEvent, rm: Room | undefined): void => {
@@ -85,7 +89,7 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
     // which would poison downstream useMemo identity deps (learned the hard way)
     const live = [...(room?.getLiveTimeline().getEvents() ?? [])];
     const pend = [...(room?.getPendingEvents() ?? [])];
-    const remote = live.filter((e) => !isAnnotation(e) && !isReplace(e));
+    const remote = live.filter((e) => !isAnnotation(e) && !isReplace(e) && !isThreadReply(e));
     return { rawEvents: live, events: remote, pending: pend };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room, tick]);
@@ -99,6 +103,21 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
 
   const edits = useMemo(() => latestEdits([...rawEvents, ...pending]), [rawEvents, pending]);
   const reactions = useMemo(() => aggregateReactions(rawEvents, myUserId), [rawEvents, myUserId]);
+  const threadByRoot = useMemo(() => {
+    const m = new Map<string, { count: number; lastTs: number; participants: string[] }>();
+    for (const t of room?.getThreads() ?? []) {
+      const replies = t.events.filter((e) => e.getId() !== t.id);
+      const parts = new Set<string>();
+      for (const e of replies) if (e.getSender()) parts.add(e.getSender()!);
+      m.set(t.id, {
+        count: replies.length,
+        lastTs: replies.length ? replies[replies.length - 1]!.getTs() : 0,
+        participants: [...parts],
+      });
+    }
+    return m;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [room, tick]);
   const groups = useMemo(() => groupEvents([...events, ...pending]), [events, pending]);
 
   // undo window ticker
@@ -110,6 +129,16 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
     }, 500);
     return () => clearInterval(t);
   }, [lastAck, undoGraceMs, bump]);
+
+  // Esc closes the thread panel
+  useEffect(() => {
+    if (!openThread) return;
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === "Escape") setOpenThread(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [openThread]);
 
   // autoscroll + receipts
   useEffect(() => {
@@ -213,7 +242,7 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
   const e2ee = room?.hasEncryptionStateEvent() ?? false;
 
   return (
-    <main className="roomview" data-testid="roomview">
+    <main className={`roomview${openThread ? " panel-open" : ""}`} data-testid="roomview">
       <header className="room-header">
         <div className="title">
           <span className="room-name">{room?.name ?? roomId}</span>
@@ -225,6 +254,8 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
         </div>
       </header>
 
+      <div className="body">
+      <div className="col-main">
       <div className="scroller" ref={scrollerRef} onScroll={onScroll}>
         {(() => {
           const token = room?.getLiveTimeline().getPaginationToken(Direction.Backward);
@@ -299,10 +330,41 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
                         </button>
                       </span>
                     )}
+                    {(() => {
+                      const eid = ev.getId();
+                      const th = eid ? threadByRoot.get(eid) : undefined;
+                      if (!th || th.count === 0) return null;
+                      return (
+                        <button
+                          className="thread-badge"
+                          data-testid={`thread-badge-${ev.getId()}`}
+                          onClick={() => setOpenThread(ev.getId()!)}
+                        >
+                          💬 {th.count} {th.count === 1 ? "reply" : "replies"}
+                          {th.participants.length > 0 && (
+                            <span className="who-mini"> · {th.participants.map(shortName).join(", ")}</span>
+                          )}
+                        </button>
+                      );
+                    })()}
                   </div>
                   {kind !== "system" && kind !== "redacted" && kind !== "utd" && (
                     <div className="actions" role="toolbar" aria-label="Message actions">
-                      <button aria-label="Reply" onClick={() => setMode({ kind: "reply", ev })}>↩</button>
+                      <button
+                        aria-label="Reply"
+                        onClick={() =>
+                          setMode(() => {
+                            const eid = ev.getId();
+                            return {
+                              kind: "reply",
+                              ev,
+                              threadRoot: eid && threadByRoot.has(eid) ? eid : undefined,
+                            };
+                          })
+                        }
+                      >
+                        ↩
+                      </button>
                       {ev.getSender() === myUserId && kind === "text" && (
                         <button
                           aria-label="Edit"
@@ -368,6 +430,18 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
         onAck={(eventId) => setLastAck({ eventId, ts: Date.now() })}
         myUserId={myUserId}
       />
+      </div>
+      {openThread && room && (
+        <ThreadPanel
+          client={client}
+          room={room}
+          threadId={openThread}
+          registry={registry}
+          myUserId={myUserId}
+          onClose={() => setOpenThread(null)}
+        />
+      )}
+      </div>
     </main>
   );
 

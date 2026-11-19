@@ -12,7 +12,7 @@ import { bodyOf } from "./model.js";
 
 export type ComposerMode =
   | { kind: "send" }
-  | { kind: "reply"; ev: MatrixEvent }
+  | { kind: "reply"; ev: MatrixEvent; threadRoot?: string }
   | { kind: "edit"; ev: MatrixEvent; text: string };
 
 export interface ComposerProps {
@@ -115,6 +115,8 @@ export function Composer(props: ComposerProps): JSX.Element {
     }
     const relationBits: Record<string, unknown> = {};
     if (inReplyTo) relationBits["m.in_reply_to"] = inReplyTo;
+    // (thread relation for threaded replies is applied via the sendEvent
+    //  threadId overload below — js-sdk owns is_falling_back construction)
     if (mode.kind === "edit") {
       const target = mode.ev;
       const oldBody = bodyOf(target);
@@ -149,7 +151,10 @@ export function Composer(props: ComposerProps): JSX.Element {
 
     update("");
     try {
-      const res = await client.sendEvent(roomId, EventType.RoomMessage, content as never);
+      const threadRoot = mode.kind === "reply" ? mode.threadRoot : undefined;
+      const res = threadRoot
+        ? await client.sendEvent(roomId, threadRoot, EventType.RoomMessage, content as never)
+        : await client.sendEvent(roomId, EventType.RoomMessage, content as never);
       onAck(res.event_id);
     } catch (err) {
       /* pending event carries NOT_SENT status; chrome offers retry/cancel */

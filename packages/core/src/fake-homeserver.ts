@@ -260,6 +260,24 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
     return s;
   };
 
+  /** Pull seeded timeline events out of the snapshot builder once per user so
+   *  /relations and history agree with what /sync advertised (idempotent:
+   *  makeSyncSnapshot is pure). */
+  const seededUsers = new Set<string>();
+  const seedHistoryFromSnapshot = (userId: string): void => {
+    if (seededUsers.has(userId)) return;
+    seededUsers.add(userId);
+    const snap = (opts.sync ? opts.sync(userId) : makeSyncSnapshot({ userId })) as {
+      rooms?: { join?: Record<string, { timeline?: { events?: Record<string, unknown>[] } }> };
+    };
+    for (const [roomId, body] of Object.entries(snap.rooms?.join ?? {})) {
+      const evs = body.timeline?.events ?? [];
+      const hist = history.get(roomId) ?? [];
+      for (const e of evs) hist.push(e as unknown as FakeEventLike);
+      history.set(roomId, hist);
+    }
+  };
+
   const record = (method: string, path: string, body: unknown): void => {
     calls.push({ method, path, body });
   };
@@ -271,7 +289,9 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
     const token = bearer(init);
     const account = token ? byToken.get(token) : undefined;
 
-    if (path.endsWith("/versions")) return jsonRes({ versions: ["v1.11", "v1.2"] });
+    // real spec list incl. v1.4: js-sdk gates thread support on v1.4 EXACT
+    // membership (isVersionSupported does not interpolate between versions)
+    if (path.endsWith("/versions")) return jsonRes({ versions: ["v1.1", "v1.2", "v1.3", "v1.4", "v1.5", "v1.6", "v1.7", "v1.8", "v1.9", "v1.10", "v1.11"] });
     if (path.endsWith("/capabilities")) return jsonRes({ capabilities: {} });
 
     if (path.endsWith("/login") && method === "POST") {
@@ -514,6 +534,40 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
       record("POST", path, { size: typeof init?.body === "string" ? init.body.length : 0 });
       return jsonRes({ content_uri: `mxc://linnet.test/up${eventSeq++}` });
     }
+
+    // GET /rooms/{roomId}/event/{eventId} — single event fetch (thread sends
+    // resolve their root this way; returning {} stalls js-sdk)
+    const eventGet = path.match(/\/rooms\/([^/]+)\/event\/([^/]+)$/);
+    if (eventGet && method === "GET") {
+      const roomId = decodeURIComponent(eventGet[1]!);
+      const wantId = decodeURIComponent(eventGet[2]!);
+      seedHistoryFromSnapshot(userId);
+      const found = (history.get(roomId) ?? []).find((e) => e.event_id === wantId);
+      if (!found) return jsonRes({ errcode: "M_NOT_FOUND", error: "not found" }, 404);
+      return jsonRes({ ...found, room_id: roomId });
+    }
+
+    // GET /rooms/{roomId}/relations/{eventId}[/{relType}] — thread hydration
+    const relations = path.match(/\/rooms\/([^/]+)\/relations\/([^/]+)(?:\/([^/]+))?$/);
+    if (relations && method === "GET") {
+      record("GET", path, null);
+      const roomId = decodeURIComponent(relations[1]!);
+      const target = decodeURIComponent(relations[2]!);
+      const relType = relations[3] ? decodeURIComponent(relations[3]) : undefined;
+      seedHistoryFromSnapshot(userId);
+      const evs = (history.get(roomId) ?? []).filter((e) => {
+        const rel = (e.content as Record<string, unknown>)?.["m.relates_to"] as Record<string, unknown> | undefined;
+        if (!rel || rel["event_id"] !== target) return false;
+        return !relType || rel["rel_type"] === relType;
+      });
+      // second page from our terminator token is EMPTY and carries no
+      // next_batch — that is how js-sdk stops paginating
+      if (url.searchParams.get("from") === "rel-end") return jsonRes({ chunk: [] });
+      return jsonRes({ chunk: evs, next_batch: "rel-end" });
+    }
+
+    // /relations fallback (e.g. global MSC3675 form): empty but valid
+    if (path.includes("/relations/")) return jsonRes({ chunk: [] });
 
     // anything else: benign {}
     record(method, path, method === "GET" ? null : await bodyJson(init));

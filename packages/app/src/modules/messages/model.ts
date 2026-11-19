@@ -114,6 +114,16 @@ export function replyTargetId(ev: MatrixEvent): string | null {
   return inReplyTo?.event_id ?? null;
 }
 
+/** True for events joined to a thread (rel_type: thread). */
+export function threadRootId(ev: MatrixEvent): string | null {
+  const rel = (ev.getContent()?.["m.relates_to"] ?? {}) as Record<string, unknown>;
+  return rel["rel_type"] === "m.thread" && typeof rel["event_id"] === "string" ? rel["event_id"] : null;
+}
+
+export function isThreadReply(ev: MatrixEvent): boolean {
+  return threadRootId(ev) !== null;
+}
+
 export interface EventGroup {
   sender: string;
   events: MatrixEvent[];

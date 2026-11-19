@@ -28,7 +28,11 @@ export function createClientSession(opts: SessionOptions): MatrixClient {
   // that key via the per-client holder in e2ee.ts. Single-SSSS-key product
   // assumption: match the first advertised key id (re-key flows land later).
   let self: MatrixClient;
+  // js-sdk 45 reads clientOpts.threadSupport in the CONSTRUCTOR (client.js:652
+  // + getter ~7099) but declares the field only on IStartClientOpts — a typing
+  // gap; spread dodges the excess-property check without using `any`.
   const client = createClient({
+    ...({ threadSupport: true } as { threadSupport: boolean }),
     baseUrl: opts.homeserverUrl,
     accessToken: opts.accessToken,
     deviceId: opts.deviceId,

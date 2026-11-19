@@ -1,5 +1,5 @@
 # PRD — Linnet: a Matrix client between Element and Cinny
-Date: 2026-11-18 · Status: **SCOPE LOCKED v0.2** (all open decisions answered by Sean 2026-11-18) · Repo: github.com/ct06033/linnet · License: AGPL-3.0-only · ⚠ §8 web-security ladder = **PROPOSED amendment, pending Sean's sign-off**
+Date: 2026-11-18 · Status: **SCOPE LOCKED v0.2** (all open decisions answered by Sean 2026-11-18) · Repo: github.com/ct06033/linnet · License: AGPL-3.0-only · §8 web-security ladder **APPROVED by Sean 2026-11-18 ("im blessing it")**
 Research base: ~/.hermes/plans/research-matrix-clients/{element.md, cinny.md} (cited, Nov 2026)
 
 ## 1. Summary & positioning
@@ -227,7 +227,7 @@ Crash reports via self-hostable Sentry, **opt-in at first run**; zero product an
 ever (deliberate contrast with Element's PostHog). No phone-home beyond configured homeserver
 + optional push gateway. Honest defaults marketing.
 
-**Web security ladder (A/B/C) — PROPOSED amendment (not Sean-approved), 2026-11-18.** A same-origin XSS is never fully
+**Web security ladder (A/B/C) — APPROVED amendment (Sean, 2026-11-18).** A same-origin XSS is never fully
 survivable in a browser — the ladder shrinks *persistent* token theft and *bulk* compromise,
 and we disclose exactly that. Marketing line: **web is hardened; the vault is desktop.**
 

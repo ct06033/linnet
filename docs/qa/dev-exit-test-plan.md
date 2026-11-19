@@ -1,6 +1,6 @@
 # Linnet — Dev-Stage Exit Test Plan (QA-PLAN v0.1)
 Date: 2026-11-18 · Repo target: `docs/qa/dev-exit-test-plan.md` (copy in after wave-1 merge)
-Authority: PRD v0.2 (§6 MVP scope, §7 perf budgets, §10 risks). This doc is the checklist for the kanban **USER-REVIEW gate** at end of dev stage (waves 1–6 merged, dev deploy live: web/PWA on Balthazar + installers built).
+Authority: PRD v0.2 + approved §8 security ladder (2026-11-18).
 
 ---
 

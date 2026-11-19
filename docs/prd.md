@@ -1,5 +1,5 @@
-# PRD (DRAFT v0.1) — "Linnet": a Matrix client between Element and Cinny
-Date: 2026-11-18 · Status: **SCOPE LOCKED v0.2** (all open decisions answered by Sean 2026-11-18) · Repo: github.com/ct06033/linnet · License: AGPL-3.0-only
+# PRD — Linnet: a Matrix client between Element and Cinny
+Date: 2026-11-18 · Status: **SCOPE LOCKED v0.2** (all open decisions answered by Sean 2026-11-18) · Repo: github.com/ct06033/linnet · License: AGPL-3.0-only · ⚠ §8 web-security ladder = **PROPOSED amendment, pending Sean's sign-off**
 Research base: ~/.hermes/plans/research-matrix-clients/{element.md, cinny.md} (cited, Nov 2026)
 
 ## 1. Summary & positioning
@@ -83,6 +83,10 @@ notifications, auto-update). A hosted **web/PWA build ships from day one as a by
 - **Distribution**: GitHub releases; PGP-signed tarballs (Cinny pattern) + winget manifest
   + Flathub/AppImage (later); self-host = serve `dist/` + `config.json` (homeserver,
   presets, lockdown flags — Element-grade deploy flexibility is a must-match).
+  Web deployments come in two hosting modes (amendment 2026-11-18, see §8 ladder):
+  **self-host-simple** = pure static + `config.json` (Option A posture) and
+  **hosted-secure** = static + a minimal auth proxy holding the access token server-side
+  (Option B — JS never sees the token; reference deploy: Balthazar dev).
 - **Calls**: **in MVP** (Decision #6, raised by Sean): 1:1 = js-sdk WebRTC (native Matrix
   call events) + screen share; group = **embed Element Call via matrix-widget-api /
   element-call-embedded** (Cinny's v4.11.1 pattern — 80% of Element's capability with 20% of
@@ -111,6 +115,9 @@ Legend: **M0** = pre-alpha plumbing, **MVP** = v0.1 usable-daily, **P1** = v0.2�
 | Multi-account (isolated stores, active-view switch) | **MVP** (Decision #5) |
 | Device/session management + revoke own sessions | MVP |
 | Native OIDC/MAS (Matrix 2.0) login | P1 |
+| Passkey/WebAuthn login via MAS (AAL2) — stolen refresh token can't mint sessions (§8 C) | P1 |
+| New-session consent: web-class sessions need approval from a verified desktop/mobile device | P1 |
+| Hosted-secure auth-proxy mode (token never in JS) — reference: Balthazar (§8 B) | P1 |
 | QR login from Element X (MSC4108) | P2 |
 | PKCS#11/HSM secure storage | P2 |
 
@@ -219,6 +226,29 @@ are hypotheses); CI perf harness runs against a seeded account on a fixed runner
 Crash reports via self-hostable Sentry, **opt-in at first run**; zero product analytics,
 ever (deliberate contrast with Element's PostHog). No phone-home beyond configured homeserver
 + optional push gateway. Honest defaults marketing.
+
+**Web security ladder (A/B/C) — PROPOSED amendment (not Sean-approved), 2026-11-18.** A same-origin XSS is never fully
+survivable in a browser — the ladder shrinks *persistent* token theft and *bulk* compromise,
+and we disclose exactly that. Marketing line: **web is hardened; the vault is desktop.**
+
+- **A (MVP default, every web deploy):** nonce-only CSP, zero third-party scripts, SRI,
+  Trusted Types where supported; short-lived access tokens + idle-TTL logout; per-account
+  origin isolation (subdomain per profile) on hosted builds; disclosure sentence "the web
+  build assumes the device/browser is trusted". This is the self-host-simple posture.
+- **B (hosted-secure mode, P1; reference deploy: Balthazar dev):** a minimal auth proxy holds
+  the access token server-side; the SPA keeps only an `HttpOnly; Secure; SameSite=Strict`
+  session cookie with refresh rotation — persistent token theft via XSS becomes impossible,
+  active-session hijack is *not* (disclose honestly). Self-host-simple stays A; this adds a
+  tiny server component and we say so in docs. Verify-at-impl, don't assume: matrix-js-sdk
+  caches **decrypted** events in IndexedDB, so full B posture needs an evaluation of
+  memory-only crypto (perf/offline tradeoff).
+- **C (identity-side gates, P1, via native OIDC/MAS §6.1):** passkey/WebAuthn login — a stolen
+  refresh token can't mint a session without the bound credential; plus **new-session consent**:
+  an unverified web-class session sees no encrypted history until approved from a verified
+  desktop/phone device, and the approval prompt renders on the *trusted* device, never inside
+  the web app itself. Default key-sharing policy for `web` sessions: verified devices only.
+
+QA gate items: dev-exit plan XI-08 + AT-01/05/06.
 
 ## 9. Non-goals
 

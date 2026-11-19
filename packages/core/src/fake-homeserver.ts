@@ -248,6 +248,8 @@ interface QueueItem {
   initialState?: Record<string, unknown>[];
   /** W6: global account data written via PUT /user/.../account_data/... */
   accountData?: { type: string; content: Record<string, unknown> };
+  /** W7: to-device message relayed from PUT /sendToDevice */
+  toDevice?: { type: string; sender: string; content: Record<string, unknown> };
 }
 
 export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithControls {
@@ -385,7 +387,7 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
           { timeline: FakeEventLike[]; ephemeral: FakeEventLike[]; state: Record<string, unknown>[] }
         >();
         for (const item of q) {
-          if (item.accountData) continue;
+          if (item.accountData || item.toDevice) continue;
           const bucket = byRoom.get(item.roomId) ?? { timeline: [], ephemeral: [], state: [] };
           if (item.event) bucket.timeline.push(item.event);
           if (item.ephemeral) bucket.ephemeral.push(item.ephemeral);
@@ -407,12 +409,17 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
             Boolean(i.accountData),
           )
           .map((i) => ({ type: i.accountData.type, sender: userId, content: i.accountData.content }));
+        const tdEvents = q
+          .filter((i): i is QueueItem & { toDevice: { type: string; sender: string; content: Record<string, unknown> } } =>
+            Boolean(i.toDevice),
+          )
+          .map((i) => ({ type: i.toDevice.type, sender: i.toDevice.sender, content: i.toDevice.content }));
         return jsonRes({
           next_batch: `b${n}`,
           rooms: { join, invite: {}, leave: {} },
           account_data: { events: adEvents },
           presence: { events: [] },
-          to_device: { events: [] },
+          to_device: { events: tdEvents },
           device_lists: { changed: {}, left: {} },
           device_one_time_keys_count: {},
         });
@@ -581,6 +588,34 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
       stateStores.set(roomId, store);
       enqueue(userId, { roomId, initialState: events });
       return jsonRes({ room_id: roomId });
+    }
+
+    // W7: PUT /sendToDevice/{type}/{txnId} — relay to every target user's
+    // queue (device granularity ignored; the sending user is skipped, matching
+    // real HS behaviour of not echoing to the originating device)
+    const tdSend = path.match(/\/sendToDevice\/([^/]+)\/[^/]+$/);
+    if (tdSend && method === "PUT") {
+      const type = decodeURIComponent(tdSend[1]!);
+      const body = (await bodyJson(init)) as { messages?: Record<string, Record<string, unknown>> };
+      record("PUT", path, body);
+      for (const [uid, byDevice] of Object.entries(body.messages ?? {})) {
+        if (uid === account?.userId) continue;
+        for (const content of Object.values(byDevice)) {
+          const td: QueueItem["toDevice"] = {
+            type,
+            sender: account?.userId ?? "@unknown:hs.test",
+            content: content as Record<string, unknown>,
+          };
+          // wake the target's parked sync even if they share this fetch server
+          enqueue(uid, { roomId: "", toDevice: td });
+        }
+      }
+      return jsonRes({});
+    }
+
+    // W7: GET /voip/turnServer — static fake creds (WebRTC tests never dial out)
+    if (path.endsWith("/voip/turnServer") && method === "GET") {
+      return jsonRes({ username: "fake", password: "fake", uris: ["stun:stun.fake.test:3478"], ttl: 86400 });
     }
 
     // W6: GET/PUT /user/{userId}/account_data/{type} — global settings storage

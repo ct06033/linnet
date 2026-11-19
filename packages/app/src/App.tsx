@@ -14,6 +14,7 @@ import { SpaceRail } from "./modules/spaces/SpaceRail.js";
 import { addableRooms, homeRooms, spaceEntries, spacesForRail } from "./modules/spaces/tree.js";
 import { addRoomToSpace, createSpace, leaveAndMaybeForget, removeRoomFromSpace } from "./modules/spaces/actions.js";
 import { NotificationEngine, makeNotifierPort } from "./modules/notify/engine.js";
+import { CallBanner } from "./modules/call/CallUi.js";
 
 export function App(): ReactNode {
   const sm = getSessionManager();
@@ -295,6 +296,7 @@ export function App(): ReactNode {
         )}
       </main>
 
+      <CallBanner client={clientForView} />
       {paletteOpen && (
         <div className="palette" role="dialog" aria-label="Command palette">
           <input

@@ -7,10 +7,19 @@ import { contextBridge, ipcRenderer } from "electron";
 import type { LinnetConfig } from "@linnet/core";
 
 const bridge = {
-  getConfig: (): Promise<Partial<LinnetConfig>> =>
-    ipcRenderer.invoke("linnet:get-config"),
+  getConfig: (): Promise<Partial<LinnetConfig>> => ipcRenderer.invoke("linnet:get-config"),
   platform: process.platform,
   version: process.env.LINNET_VERSION ?? "0.0.0",
+  kv: {
+    get: (key: string): Promise<string | null> => ipcRenderer.invoke("linnet:kv:get", key),
+    set: (key: string, value: string): Promise<void> => ipcRenderer.invoke("linnet:kv:set", key, value),
+    remove: (key: string): Promise<void> => ipcRenderer.invoke("linnet:kv:remove", key),
+  },
+  secrets: {
+    save: (key: string, value: string): Promise<void> => ipcRenderer.invoke("linnet:secret:save", key, value),
+    load: (key: string): Promise<string | null> => ipcRenderer.invoke("linnet:secret:load", key),
+    remove: (key: string): Promise<void> => ipcRenderer.invoke("linnet:secret:remove", key),
+  },
   /** reserved: extension host attach point (docs/prd.md §6.9) */
   modules: {
     async load(_moduleId: string): Promise<{ ok: false; reason: string }> {

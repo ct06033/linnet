@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createFakeHomeserver, makeSyncSnapshot } from "./fake-homeserver.js";
 import { ACCOUNTS_KV_KEY, MemoryKv, MemorySecrets, secretKeyFor } from "./accounts.js";
-import { SessionManager } from "./session.js";
+import { SessionManager, type RoomSummary, type SyncStatus } from "./session.js";
 
 const ALICE = { userId: "@alice:hs.test", password: "pw-alice", accessToken: "tok-alice" };
 const BOB = { userId: "@bob:hs.test", password: "pw-bob", accessToken: "tok-bob" };
@@ -151,5 +151,101 @@ describe("SessionManager SSO (W8)", () => {
     const f = await mkManager().discoverLogin("https://hs.test");
     expect(f.sso).toBe(false);
     expect(f.identityProviders).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W12a — first-sync lifecycle (regression suite for the "waiting for first
+// sync…" hang): restore must auto-start sync, transient errors must SURFACE
+// and auto-recover, M_UNKNOWN_TOKEN must surface as fatal without a retry storm.
+// ---------------------------------------------------------------------------
+
+function brokenSyncFetch(mode: "fail-first" | "always-401"): typeof globalThis.fetch {
+  const base = createFakeHomeserver({
+    accounts: [ALICE, BOB],
+    sync: (userId) =>
+      userId === ALICE.userId
+        ? makeSyncSnapshot({
+            userId,
+            rooms: [{ roomId: "!a1:hs.test", name: "linnet-dev" }],
+          })
+        : makeSyncSnapshot({ userId }),
+  });
+  let failedFirst = false;
+  const wrapper = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const url =
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const isInitialSync = /\/sync(\?|$)/.test(url) && !new URL(url).searchParams.get("since");
+    if (isInitialSync && (mode === "always-401" || !failedFirst)) {
+      failedFirst = true;
+      const body =
+        mode === "always-401"
+          ? { errcode: "M_UNKNOWN_TOKEN", error: "Unrecognised token", soft_logout: false }
+          : { errcode: "M_UNKNOWN", error: "injected first-sync failure" };
+      return new Response(JSON.stringify(body), {
+        status: mode === "always-401" ? 401 : 500,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return base(input, init);
+  };
+  return wrapper as unknown as typeof globalThis.fetch;
+}
+
+describe("W12a first-sync lifecycle", () => {
+  it("restore() auto-starts the first sync (cold-boot hang regression)", { timeout: 30000 }, async () => {
+    const kv = new MemoryKv();
+    const secrets = new MemorySecrets();
+    const sm1 = new SessionManager({ kv, secrets, fetchFn: makeFetch() });
+    await sm1.login({ homeserverUrl: "https://hs.test", username: ALICE.userId, password: ALICE.password });
+    sm1.stopAll();
+    const sm2 = new SessionManager({ kv, secrets, fetchFn: makeFetch() });
+    const names = new Set<string>();
+    const phases: SyncStatus["phase"][] = [];
+    sm2.onRooms((_id, rooms) => {
+      for (const r of rooms) names.add(r.name);
+    });
+    sm2.onSyncStatus((_id, st) => phases.push(st.phase));
+    await sm2.restore(); // used to build clients WITHOUT ever starting sync
+    await until(() => names.has("linnet-dev"), 1000); // 10s budget
+    expect(phases).toContain("prepared");
+    sm2.stopAll();
+  });
+
+  it("transient first-sync error surfaces as status, then sync recovers and populates rooms", { timeout: 45000 }, async () => {
+    const sm = new SessionManager({
+      kv: new MemoryKv(),
+      secrets: new MemorySecrets(),
+      fetchFn: brokenSyncFetch("fail-first"),
+    });
+    const statuses: SyncStatus[] = [];
+    let rooms: RoomSummary[] = [];
+    sm.onSyncStatus((_id, st) => statuses.push(st));
+    sm.onRooms((_id, r) => {
+      rooms = r;
+    });
+    await sm.login({ homeserverUrl: "https://hs.test", username: ALICE.userId, password: ALICE.password });
+    await until(() => statuses.some((s) => s.phase === "error" && !s.fatal), 800); // error VISIBLE, not swallowed
+    await until(() => rooms.length > 0, 1500); // auto-restart (1s backoff) lands the room list
+    expect(rooms.map((r) => r.name)).toContain("linnet-dev");
+    expect(statuses[statuses.length - 1]?.phase).toBe("prepared");
+    sm.stopAll();
+  });
+
+  it("M_UNKNOWN_TOKEN on first sync surfaces FATAL error — no infinite retry storm", { timeout: 30000 }, async () => {
+    const sm = new SessionManager({
+      kv: new MemoryKv(),
+      secrets: new MemorySecrets(),
+      fetchFn: brokenSyncFetch("always-401"),
+    });
+    const statuses: SyncStatus[] = [];
+    sm.onSyncStatus((_id, st) => statuses.push(st));
+    await sm.login({ homeserverUrl: "https://hs.test", username: ALICE.userId, password: ALICE.password });
+    await until(() => statuses.some((s) => s.phase === "error" && s.fatal), 1000);
+    const atFatal = statuses.length;
+    await new Promise((r) => setTimeout(r, 2500)); // backoff windows would fire here
+    // after the fatal status nothing further may flip to non-fatal error states
+    expect(statuses.slice(atFatal).every((s) => s.phase !== "error" || s.fatal)).toBe(true);
+    sm.stopAll();
   });
 });

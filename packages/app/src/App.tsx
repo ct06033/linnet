@@ -4,7 +4,7 @@
  * (spaces rail is still scaffold — real space graph lands with W3).
  */
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import type { AccountMetadata, ModuleRegistry, RoomSummary, SlashCommandContribution } from "@linnet/core";
+import type { AccountMetadata, ModuleRegistry, RoomSummary, SlashCommandContribution, SyncStatus } from "@linnet/core";
 import { bootRegistry } from "./modules.js";
 import { readConfig } from "./bridge.js";
 import { getSessionManager } from "./session-context.js";
@@ -29,6 +29,8 @@ export function App(): ReactNode {
   const [accounts, setAccounts] = useState<AccountMetadata[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
+  // W12a: first-sync errors must SURFACE instead of hanging on "waiting…"
+  const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [defaultHs, setDefaultHs] = useState<string | undefined>();
   const [selectedRoom, setSelectedRoom] = useState<string | null>(null);
@@ -58,13 +60,20 @@ export function App(): ReactNode {
       setActiveId(sm.activeId);
       setPhase(acc.length > 0 ? "ready" : "login");
     })().catch((err) => console.error("linnet boot failed", err));
-    return sm.onRooms((accountId, rs) => {
+    const offRooms = sm.onRooms((accountId, rs) => {
       if (accountId !== sm.activeId) return;
       setRooms(rs);
       // W9: dock/taskbar unread count (no-op off Electron)
       const total = rs.reduce((n, r) => n + (r.membership === "join" ? r.unread : 0), 0);
       void window.linnet?.setBadge?.(total);
     });
+    const offStatus = sm.onSyncStatus((accountId, st) => {
+      if (accountId === sm.activeId) setSyncStatus(st);
+    });
+    return () => {
+      offRooms();
+      offStatus();
+    };
   }, [sm]);
 
   useEffect(() => {
@@ -96,6 +105,7 @@ export function App(): ReactNode {
     await sm.setActive(id);
     setActiveId(id);
     setRooms([]);
+    setSyncStatus(null);
     setSelectedRoom(null);
     setSpaceId(null);
     setAddOpen(false);
@@ -337,7 +347,18 @@ export function App(): ReactNode {
             <p className="placeholder">
               {rooms.length > 0
                 ? "pick a room — timeline is live"
-                : "waiting for first sync…"}
+                : syncStatus?.phase === "error"
+                  ? (
+                      <>
+                        {syncStatus.fatal
+                          ? `sync failed: ${syncStatus.message} — your session was rejected, sign in again (account menu)`
+                          : `sync problem: ${syncStatus.message} — retrying…`}{" "}
+                        {!syncStatus.fatal && (
+                          <button onClick={() => sm.retrySync()}>retry now</button>
+                        )}
+                      </>
+                    )
+                  : "waiting for first sync…"}
             </p>
             <footer className="composer">composer arrives wave 4 · registry: {registry ? "up" : "booting…"}</footer>
           </>

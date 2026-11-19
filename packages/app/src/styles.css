@@ -167,3 +167,25 @@ main.roomview:not(.panel-open) .thread-panel { display: none; }
 .viewer-bar { display: flex; align-items: center; gap: 10px; color: #ddd; font-size: 13px; }
 .viewer-bar button { border: none; background: rgba(255,255,255,.12); color: #fff; border-radius: 8px; padding: 4px 10px; cursor: pointer; }
 .viewer-loading { color: #aaa; padding: 30px; }
+.e2ee-badge { border: none; background: transparent; color: inherit; cursor: pointer; font-size: 12px; opacity: .9; }
+.e2ee-badge.warn { color: #f0b429; }
+.e2ee-badge.on { color: #4cc98b; }
+.e2ee-badge.off { opacity: .5; }
+.sheet-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 90; display: flex; align-items: center; justify-content: center; }
+.sheet { background: var(--bg-elev, #1c212c); border: 1px solid var(--border, #333); border-radius: 14px; width: min(520px, 92vw); max-height: 80vh; overflow-y: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 12px; }
+.sheet header { display: flex; justify-content: space-between; align-items: center; font-weight: 600; }
+.sheet header button { border: none; background: transparent; color: inherit; cursor: pointer; font-size: 15px; }
+.sheet button { border: 1px solid var(--border, #333); background: rgba(255,255,255,.04); color: inherit; border-radius: 9px; padding: 7px 12px; cursor: pointer; }
+.sheet .primary { background: var(--accent, #4f6bed); border: none; color: #fff; font-weight: 600; }
+.sheet .primary:disabled { opacity: .45; cursor: not-allowed; }
+.status-line { font-size: 13px; opacity: .9; }
+.status-line .count { opacity: .6; }
+.note { font-size: 12px; opacity: .55; margin: 0; }
+.wizard, .recover { display: flex; flex-direction: column; gap: 10px; font-size: 13px; }
+.wizard input[type="password"], .wizard input[type="text"], .recover input { background: rgba(0,0,0,.25); border: 1px solid var(--border, #333); color: inherit; border-radius: 8px; padding: 8px 10px; font-size: 14px; }
+.wizard fieldset { border: 1px solid var(--border, #333); border-radius: 10px; display: flex; flex-direction: column; gap: 6px; }
+.recovery-key { font-family: monospace; font-size: 14px; background: rgba(0,0,0,.35); padding: 10px 12px; border-radius: 8px; word-break: break-all; border: 1px dashed var(--border, #555); }
+.ack { display: flex; gap: 8px; align-items: center; }
+.err { color: #e5484d; }
+.spin { opacity: .7; }
+.utd-help { border: none; background: transparent; color: var(--accent, #4f6bed); cursor: pointer; font-size: 13px; padding: 0; }

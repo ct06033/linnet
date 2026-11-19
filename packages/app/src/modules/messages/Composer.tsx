@@ -66,7 +66,14 @@ export function Composer(props: ComposerProps): JSX.Element {
   const mentionOptions = useMemo(() => {
     if (mentionQuery === null) return [];
     const room = client.getRoom(roomId);
-    const members = Object.values(room?.getJoinedMembers() ?? {});
+    // js-sdk 45 getJoinedMembers() returns an ARRAY of JoinedMember ({user_id,
+    // display_name}) while older paths/tests hand back userId-keyed dicts or
+    // RoomMembers — normalize every shape to {userId, display_name}.
+    const jm = room?.getJoinedMembers() as unknown;
+    const raw: unknown[] = Array.isArray(jm) ? jm : Object.values((jm as object) ?? {});
+    const members = raw
+      .map((x) => x as { user_id?: string; userId?: string; display_name?: string; rawDisplayName?: string })
+      .map((m) => ({ userId: m.userId ?? m.user_id ?? "", display_name: m.display_name ?? m.rawDisplayName }));
     return members
       .filter((m) => {
         const local = m.userId.split(":")[0]?.replace(/^@/, "") ?? "";

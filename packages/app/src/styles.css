@@ -48,6 +48,14 @@ body { font: 14px/1.45 system-ui, "Inter", sans-serif; background: var(--bg); co
 .account-menu button.danger { flex: 0; color: var(--danger); font-size: 12px; }
 .space { text-align: left; background: transparent; border: 0; color: var(--fg-dim); padding: 7px 9px; border-radius: 7px; cursor: pointer; }
 .space.active, .space:hover { background: var(--line); color: var(--fg); }
+/* W12 item 8: room-row context menu (only leave/decline/remove path) */
+.roomlist .row { position: relative; }
+.roomlist .row .row-menu { opacity: 0; flex: none; padding: 0 6px; border-radius: 6px; color: var(--fg-dim); font-weight: 700; }
+.roomlist .row:hover .row-menu, .roomlist .row:focus-within .row-menu, .roomlist .row .row-menu:focus { opacity: 1; }
+.room-ctx-menu { position: fixed; z-index: 30; min-width: 200px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 6px; display: flex; flex-direction: column; gap: 2px; box-shadow: 0 10px 30px rgb(0 0 0 / 20%); }
+.room-ctx-menu button { background: transparent; border: 0; color: var(--fg); text-align: left; padding: 6px 9px; border-radius: 6px; cursor: pointer; }
+.room-ctx-menu button:hover { background: var(--bg-alt); }
+.room-ctx-menu button.danger { color: var(--danger); }
 .roomlist { border-right: 1px solid var(--line); padding: 10px; overflow-y: auto; }
 .roomlist h3 { font-size: 11px; text-transform: uppercase; color: var(--fg-dim); margin: 12px 6px 6px; }
 .roomlist .empty { color: var(--fg-dim); font-size: 12px; margin: 4px 6px; }

@@ -112,11 +112,14 @@ describe("W5b spaces", () => {
     );
   });
 
-  it("S5: remove-from-space sends an empty-content child PUT (reprised link)", async () => {
+  it("S5: remove-from-space (via row context menu) sends an empty-content child PUT", async () => {
     render(<App />);
     await waitForRooms();
     fireEvent.click(screen.getByRole("button", { name: "Space Work" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Remove team from space" }));
+    // W12 item 8: the inline ✕ is gone — removal goes through the context menu
+    expect(document.querySelector(".row-x")).toBeNull();
+    fireEvent.click(await screen.findByRole("button", { name: "Menu for team" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Remove from space" }));
     await waitFor(() =>
       expect(
         controls.calls.find(

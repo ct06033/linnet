@@ -65,10 +65,13 @@ describe("W6 invites + notify settings", () => {
     await waitFor(() => expect(document.querySelector(".roomlist")?.textContent).toContain("design-help"));
   });
 
-  it("N8: Decline POSTs leave + forget and the row disappears", async () => {
+  it("N8: Decline (via row context menu) POSTs leave + forget and the row disappears", async () => {
     render(<App />);
     await signIn();
-    fireEvent.click(screen.getByRole("button", { name: "Decline design-help" }));
+    // W12 item 8: no inline ✕ anymore — decline lives in the context menu
+    expect(document.querySelector(".row-decline")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Menu for design-help" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Decline invite" }));
     await waitFor(() => {
       const dec = controls.calls.map((c) => decodeURIComponent(c.path));
       expect(dec.some((p) => p.endsWith("/rooms/!in1:hs.test/leave"))).toBe(true);

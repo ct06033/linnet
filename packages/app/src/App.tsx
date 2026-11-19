@@ -11,8 +11,8 @@ import { getSessionManager } from "./session-context.js";
 import { Login } from "./screens/Login.js";
 import { RoomView } from "./modules/messages/RoomView.js";
 import { SpaceRail } from "./modules/spaces/SpaceRail.js";
-import { addableRooms, homeRooms, spaceEntries, spacesForRail } from "./modules/spaces/tree.js";
 import { addRoomToSpace, createSpace, leaveAndMaybeForget, removeRoomFromSpace } from "./modules/spaces/actions.js";
+import { addableRooms, homeRooms, isDirectChild, spaceEntries, spacesForRail } from "./modules/spaces/tree.js";
 import { NotificationEngine, makeNotifierPort } from "./modules/notify/engine.js";
 import { CallBanner } from "./modules/call/CallUi.js";
 import { ACCENTS, loadAppearance, mountAppearance, type Appearance } from "./modules/settings/appearance.js";
@@ -30,6 +30,8 @@ export function App(): ReactNode {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
   const [menuOpen, setMenuOpen] = useState(false);
+  // W12 item 8: room-row context menu (leave/decline/remove live ONLY here)
+  const [rowMenu, setRowMenu] = useState<{ roomId: string; x: number; y: number } | null>(null);
   const [defaultHs, setDefaultHs] = useState<string | undefined>();
   const [selectedRoom, setSelectedRoom] = useState<string | null>(null);
   // W8 theming: applied to <html> at boot; live switchable from the account menu
@@ -75,6 +77,7 @@ export function App(): ReactNode {
       } else if (e.key === "Escape") {
         setPaletteOpen(false);
         setMenuOpen(false);
+        setRowMenu(null);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -100,6 +103,14 @@ export function App(): ReactNode {
     setSpaceId(null);
     setAddOpen(false);
     setMenuOpen(false);
+    setRowMenu(null);
+  }
+
+  // W12 item 8: single entry point for the row context menu (⋯ button or right-click)
+  function openRowMenu(roomId: string, x: number, y: number): void {
+    const vw = typeof window !== "undefined" ? window.innerWidth : 1024;
+    const vh = typeof window !== "undefined" ? window.innerHeight : 768;
+    setRowMenu({ roomId, x: Math.max(4, Math.min(x, vw - 216)), y: Math.max(4, Math.min(y, vh - 170)) });
   }
 
   const clientForView = useMemo(() => {
@@ -237,7 +248,13 @@ export function App(): ReactNode {
             <h3>People</h3>
             {dmRooms.length === 0 && <p className="empty">no DMs</p>}
             {dmRooms.map((r) => (
-              <Row key={r.roomId} r={r} selected={selectedRoom === r.roomId} onSelect={setSelectedRoom} />
+              <Row
+                key={r.roomId}
+                r={r}
+                selected={selectedRoom === r.roomId}
+                onSelect={setSelectedRoom}
+                onOpenMenu={openRowMenu}
+              />
             ))}
             <h3>Rooms</h3>
             {invites.map((r) => (
@@ -246,6 +263,7 @@ export function App(): ReactNode {
                 r={r}
                 selected={selectedRoom === r.roomId}
                 onSelect={setSelectedRoom}
+                onOpenMenu={openRowMenu}
                 onJoin={
                   clientForView
                     ? () => {
@@ -253,15 +271,16 @@ export function App(): ReactNode {
                       }
                     : undefined
                 }
-                onDecline={
-                  clientForView
-                    ? () => void leaveAndMaybeForget(clientForView, r.roomId, true).catch(() => undefined)
-                    : undefined
-                }
               />
             ))}
             {homeList.map((r) => (
-              <Row key={r.roomId} r={r} selected={selectedRoom === r.roomId} onSelect={setSelectedRoom} />
+              <Row
+                key={r.roomId}
+                r={r}
+                selected={selectedRoom === r.roomId}
+                onSelect={setSelectedRoom}
+                onOpenMenu={openRowMenu}
+              />
             ))}
             {rooms.length === 0 && <p className="empty">syncing…</p>}
           </>
@@ -296,11 +315,7 @@ export function App(): ReactNode {
                   r={e.room}
                   selected={selectedRoom === e.room.roomId}
                   onSelect={setSelectedRoom}
-                  onRemove={
-                    clientForView && activeSpace
-                      ? () => void removeRoomFromSpace(clientForView, activeSpace.roomId, e.room.roomId)
-                      : undefined
-                  }
+                  onOpenMenu={openRowMenu}
                 />
               ) : (
                 <div key={e.space.roomId} className="nested-space">
@@ -311,6 +326,7 @@ export function App(): ReactNode {
                       r={r}
                       selected={selectedRoom === r.roomId}
                       onSelect={setSelectedRoom}
+                      onOpenMenu={openRowMenu}
                     />
                   ))}
                 </div>
@@ -345,6 +361,70 @@ export function App(): ReactNode {
       </main>
 
       <CallBanner client={clientForView} />
+      {rowMenu &&
+        (() => {
+          const target = rooms.find((r) => r.roomId === rowMenu.roomId);
+          if (!target) return null;
+          const close = (): void => setRowMenu(null);
+          const canRemoveFromSpace =
+            activeSpace !== null && !target.invite && isDirectChild(activeSpace.roomId, target.roomId, rooms);
+          return (
+            <div
+              className="room-ctx-menu"
+              role="menu"
+              aria-label={`Actions for ${target.name}`}
+              data-testid="room-ctx-menu"
+              style={{ left: rowMenu.x, top: rowMenu.y }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {target.invite ? (
+                <>
+                  <button
+                    role="menuitem"
+                    onClick={() => {
+                      void clientForView?.joinRoom(target.roomId).catch(() => undefined);
+                      close();
+                    }}
+                  >
+                    Accept invite
+                  </button>
+                  <button
+                    role="menuitem"
+                    className="danger"
+                    onClick={() => {
+                      if (clientForView) void leaveAndMaybeForget(clientForView, target.roomId, true).catch(() => undefined);
+                      close();
+                    }}
+                  >
+                    Decline invite
+                  </button>
+                </>
+              ) : (
+                <button
+                  role="menuitem"
+                  className="danger"
+                  onClick={() => {
+                    if (clientForView) void leaveAndMaybeForget(clientForView, target.roomId, target.isDM).catch(() => undefined);
+                    close();
+                  }}
+                >
+                  {target.isDM ? "Leave & forget DM" : "Leave room"}
+                </button>
+              )}
+              {canRemoveFromSpace && activeSpace && (
+                <button
+                  role="menuitem"
+                  onClick={() => {
+                    if (clientForView) void removeRoomFromSpace(clientForView, activeSpace.roomId, target.roomId);
+                    close();
+                  }}
+                >
+                  Remove from space
+                </button>
+              )}
+            </div>
+          );
+        })()}
       {paletteOpen && (
         <div className="palette" role="dialog" aria-modal="true" aria-label="Command palette" ref={paletteRef}>
           <input
@@ -371,22 +451,25 @@ function Row({
   r,
   selected,
   onSelect,
-  onRemove,
+  onOpenMenu,
   onJoin,
-  onDecline,
 }: {
   r: RoomSummary;
   selected: boolean;
   onSelect: (id: string) => void;
-  onRemove?: () => void;
+  /** W12 item 8: opens the row context menu (the ONLY leave/decline path now) */
+  onOpenMenu: (roomId: string, x: number, y: number) => void;
   onJoin?: () => void;
-  onDecline?: () => void;
 }): ReactNode {
   return (
     <button
       className={`row${selected ? " selected" : ""}`}
       aria-current={selected ? "true" : undefined}
       onClick={() => onSelect(r.roomId)}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        onOpenMenu(r.roomId, e.clientX, e.clientY);
+      }}
     >
       <span className="name">{r.name}</span>
       {r.invite && <span className="invite">invite</span>}
@@ -404,32 +487,25 @@ function Row({
           Join
         </span>
       )}
-      {onDecline && (
-        <span
-          role="button"
-          className="row-decline"
-          aria-label={`Decline ${r.name}`}
-          onClick={(e) => {
-            e.stopPropagation();
-            onDecline();
-          }}
-        >
-          ✕
-        </span>
-      )}
-      {onRemove && (
-        <span
-          role="button"
-          className="row-x"
-          aria-label={`Remove ${r.name} from space`}
-          onClick={(e) => {
-            e.stopPropagation();
-            onRemove();
-          }}
-        >
-          ✕
-        </span>
-      )}
+      <span
+        role="button"
+        className="row-menu"
+        aria-label={`Menu for ${r.name}`}
+        aria-haspopup="menu"
+        onClick={(e) => {
+          e.stopPropagation();
+          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+          onOpenMenu(r.roomId, rect.left - 150, rect.bottom + 4);
+        }}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+          onOpenMenu(r.roomId, rect.left - 150, rect.bottom + 4);
+        }}
+      >
+        ⋯
+      </span>
     </button>
   );
 }

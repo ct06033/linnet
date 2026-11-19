@@ -4,7 +4,7 @@
  * bodies per EventKind.
  */
 import type { MatrixClient, MatrixEvent } from "matrix-js-sdk";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import type { LinnetModule, TimelineItemContribution } from "@linnet/core";
 import { sanitizeHtml, mxcUrl } from "./html.js";
 import { stripFallbackQuote } from "./markdown.js";
@@ -17,8 +17,10 @@ import {
   rawContentOf,
   replyTargetId,
   type EventKind,
+  type PollState,
   type ReactionAgg,
 } from "./model.js";
+import { EmojiPicker } from "./EmojiPicker.js";
 
 export interface TimelineItemProps {
   ev: MatrixEvent;
@@ -29,6 +31,9 @@ export interface TimelineItemProps {
   replyTarget?: { senderName: string; body: string } | null;
   reactions: ReactionAgg[];
   onReact: (target: MatrixEvent, key: string) => void;
+  poll?: PollState;
+  onVote?: (target: MatrixEvent, answerId: string) => void;
+  onEndPoll?: (target: MatrixEvent) => void;
 }
 
 const QUICK_REACTIONS = ["👍", "❤️", "😂", "🎉", "😮", "😢", "🔥", "👀"];
@@ -65,6 +70,7 @@ function renderBody(props: TimelineItemProps, ev: MatrixEvent): ReactNode {
 
 function ReactionRow(props: TimelineItemProps): ReactNode {
   const { ev, reactions, onReact } = props;
+  const [picking, setPicking] = useState(false);
   return (
     <div className="reactions" data-testid={`reactions-${ev.getId()}`}>
       {reactions.map((r) => (
@@ -83,6 +89,14 @@ function ReactionRow(props: TimelineItemProps): ReactNode {
             {k}
           </button>
         ))}
+        <button className="qr" onClick={() => setPicking((v) => !v)} aria-label="more reactions">
+          ➕
+        </button>
+        {picking && (
+          <span className="picker-anchor">
+            <EmojiPicker label="Reaction picker" onSelect={(c) => onReact(ev, c)} onClose={() => setPicking(false)} />
+          </span>
+        )}
       </span>
     </div>
   );
@@ -185,6 +199,51 @@ function UnknownBody(props: unknown): ReactNode {
   );
 }
 
+function PollBody(props: unknown): ReactNode {
+  const p = props as TimelineItemProps;
+  const poll = p.poll;
+  if (!poll) return <div className="msg msg-poll placeholder">Poll (loading…)</div>;
+  const total = poll.voters.size;
+  const max = Math.max(1, ...[...poll.votes.values()]);
+  return (
+    <div className="msg msg-poll" data-testid={`poll-${p.ev.getId()}`}>
+      <div className="poll-question">📊 {poll.start.question}</div>
+      {poll.start.answers.map((a) => {
+        const count = poll.votes.get(a.id) ?? 0;
+        const pct = total > 0 ? Math.round((count / total) * 100) : 0;
+        const mine = poll.myVote.includes(a.id);
+        return (
+          <button
+            key={a.id}
+            className={`poll-option${mine ? " mine" : ""}${poll.ended ? " ended" : ""}`}
+            disabled={poll.ended}
+            aria-label={`Vote: ${a.text}`}
+            onClick={() => p.onVote?.(p.ev, a.id)}
+          >
+            <span className="poll-bar" style={{ width: `${(count / max) * 100}%` }} />
+            <span className="poll-label">
+              {mine ? "☑" : "☐"} {a.text}
+            </span>
+            <span className="poll-count">
+              {count} · {pct}%
+            </span>
+          </button>
+        );
+      })}
+      <div className="poll-meta">
+        {total} {total === 1 ? "vote" : "votes"}
+        {poll.start.maxSelections > 1 && ` · pick up to ${poll.start.maxSelections}`}
+        {poll.ended && <span className="poll-ended"> · ended{poll.endedBy ? ` by ${poll.endedBy.split(":")[0]}` : ""}</span>}
+        {!poll.ended && p.ev.getSender() === p.myUserId && p.onEndPoll && (
+          <button className="poll-end-btn" onClick={() => p.onEndPoll?.(p.ev)} aria-label="End poll">
+            End poll
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function kindFor(ev: MatrixEvent): EventKind {
   return kindOf(ev);
 }
@@ -202,6 +261,7 @@ export function contributions(): TimelineItemContribution[] {
     { slot: "timeline-item", kind: "utd", render: UtdBody },
     { slot: "timeline-item", kind: "redacted", render: RedactedBody },
     { slot: "timeline-item", kind: "reaction", render: () => null },
+    { slot: "timeline-item", kind: "poll", render: PollBody },
     { slot: "timeline-item", kind: "unknown", render: UnknownBody },
   ];
 }

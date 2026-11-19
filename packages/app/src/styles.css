@@ -115,3 +115,33 @@ main.roomview:not(.panel-open) .thread-panel { display: none; }
 .thread-root { border-bottom: 1px dashed var(--border, #333); padding-bottom: 6px; margin-bottom: 6px; }
 .thread-composer { margin: 8px 10px 10px; }
 .thread-composer textarea { flex: 1; }
+
+/* ── W4b2 polls / pickers / mentions ─────────────────────────── */
+.msg-poll { border: 1px solid var(--border, #333); border-radius: 10px; padding: 8px 10px; max-width: 420px; }
+.poll-question { font-weight: 600; margin-bottom: 6px; }
+.poll-option { position: relative; display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; border: 1px solid var(--border, #3a3f4b); background: transparent; color: inherit; border-radius: 8px; padding: 5px 9px; margin: 3px 0; cursor: pointer; overflow: hidden; }
+.poll-option:disabled { cursor: default; opacity: .85; }
+.poll-option.mine { border-color: var(--accent, #4f6bed); }
+.poll-bar { position: absolute; inset: 0 auto 0 0; background: rgba(79, 107, 237, .18); z-index: 0; }
+.poll-label, .poll-count { position: relative; z-index: 1; }
+.poll-count { margin-left: auto; font-size: 12px; opacity: .75; }
+.poll-meta { display: flex; gap: 8px; align-items: center; font-size: 12px; opacity: .75; margin-top: 5px; }
+.poll-ended { color: #e5a05d; }
+.poll-end-btn { margin-left: auto; border: 1px solid var(--border, #3a3f4b); background: transparent; color: inherit; border-radius: 6px; font-size: 11.5px; cursor: pointer; padding: 2px 7px; }
+.poll-editor { display: flex; flex-direction: column; gap: 6px; padding: 6px 0; }
+.poll-editor input { background: var(--bg-input, #171b24); color: inherit; border: 1px solid var(--border, #2c313d); border-radius: 8px; padding: 7px 10px; font: inherit; }
+.poll-opt-row { display: flex; gap: 6px; }
+.poll-opt-row button { border: none; background: transparent; color: inherit; cursor: pointer; }
+.poll-editor-actions { display: flex; gap: 8px; align-items: center; }
+.poll-editor-actions button { border: 1px solid var(--border, #2c313d); background: transparent; color: inherit; border-radius: 8px; padding: 5px 10px; cursor: pointer; }
+.picker-anchor { position: relative; display: inline-flex; }
+.emoji-picker { position: absolute; bottom: 30px; right: 0; z-index: 40; width: 300px; max-height: 320px; overflow-y: auto; background: var(--bg-elev, #1c212c); border: 1px solid var(--border, #333); border-radius: 12px; padding: 8px; box-shadow: 0 8px 30px rgba(0,0,0,.4); }
+.emoji-picker input { width: 100%; box-sizing: border-box; background: var(--bg-input, #171b24); color: inherit; border: 1px solid var(--border, #2c313d); border-radius: 8px; padding: 6px 9px; margin-bottom: 6px; }
+.emoji-cat h4 { margin: 6px 2px 2px; font-size: 11px; text-transform: uppercase; opacity: .55; }
+.emoji-row { display: flex; flex-wrap: wrap; }
+.emoji-row button { border: none; background: transparent; font-size: 19px; padding: 3px; cursor: pointer; border-radius: 6px; }
+.emoji-row button:hover { background: rgba(255,255,255,.08); }
+.mention-menu { list-style: none; margin: 0; padding: 0; position: absolute; bottom: calc(100% + 4px); left: 8px; z-index: 40; background: var(--bg-elev, #1c212c); border: 1px solid var(--border, #333); border-radius: 10px; min-width: 240px; max-height: 180px; overflow-y: auto; }
+.mention-menu button { display: flex; gap: 8px; align-items: baseline; width: 100%; text-align: left; border: none; background: transparent; color: inherit; padding: 6px 10px; cursor: pointer; font-size: 13px; }
+.mention-menu button.active, .mention-menu button:hover { background: rgba(79, 107, 237, .18); }
+.mention-menu code { font-size: 11px; opacity: .6; }

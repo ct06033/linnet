@@ -122,7 +122,7 @@ export function VoiceBody(props: MediaBodyProps): ReactNode {
       <button className="voice-play" aria-label={playing ? "Pause" : "Play"} onClick={() => void toggle()} data-testid={`play-${props.ev.getId()}`}>
         {playing ? "⏸" : "▶"}
       </button>
-      <div className="wave" role="slider" aria-label="Seek" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100" onClick={(e) => {
+      <div className="wave" role="slider" aria-label="Seek" aria-valuenow={0} aria-valuemin={0} aria-valuemax={100} onClick={(e) => {
         const el = audioRef.current;
         if (!el || !durationMs) return;
         const rect = e.currentTarget.getBoundingClientRect();

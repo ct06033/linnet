@@ -34,6 +34,9 @@ import {
 import { Composer, type ComposerMode } from "./Composer.js";
 import { ThreadPanel } from "./ThreadPanel.js";
 import { Viewer } from "../media/renderers.js";
+import { SecurityBanner, SecuritySheet } from "../security/Security.js";
+import { prodAdapter } from "../security/prod.js";
+import type { SecurityStatus } from "../security/state.js";
 import type { TimelineItemProps } from "./renderers.js";
 
 export interface RoomViewProps {
@@ -52,6 +55,8 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
   const [openThread, setOpenThread] = useState<string | null>(null);
   const [pollBusy, setPollBusy] = useState(false);
   const [viewer, setViewer] = useState<number | null>(null);
+  const [secOpen, setSecOpen] = useState(false);
+  const [secStatus, setSecStatus] = useState<SecurityStatus | null>(null);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const pinnedBottom = useRef(true);
 
@@ -278,13 +283,24 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
     | string
     | undefined;
   const e2ee = room?.hasEncryptionStateEvent() ?? false;
+  useEffect(() => {
+    if (!e2ee) {
+      setSecStatus(null);
+      return;
+    }
+    let dead = false;
+    prodAdapter.status(client).then((s) => !dead && setSecStatus(s)).catch(() => undefined);
+    return () => {
+      dead = true;
+    };
+  }, [client, e2ee]);
 
   return (
     <main className={`roomview${openThread ? " panel-open" : ""}`} data-testid="roomview">
       <header className="room-header">
         <div className="title">
           <span className="room-name">{room?.name ?? roomId}</span>
-          {e2ee && <span className="e2ee-badge" title="Encrypted">🔒</span>}
+          <SecurityBanner encrypted={e2ee} status={secStatus} onClick={() => setSecOpen(true)} />
         </div>
         <div className="sub">
           {topic && <span className="topic">{topic}</span>}
@@ -320,16 +336,18 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
                 const imgEvents = groups.flatMap((g) => g.events).filter((e) => kindOf(e) === "image");
                 setViewer(imgEvents.findIndex((e) => e.getId() === id));
               };
+              const replyTargetMemo = parent
+                ? { senderName: shortName(parent.getSender() ?? "?"), body: bodyOf(parent) }
+                : null;
               const props: TimelineItemProps = {
                 onOpenImage: openImage,
+                onOpenSecurity: () => setSecOpen(true),
                 ev,
                 client,
                 myUserId,
                 edited: Boolean(editEv),
                 editContent: editEv?.getContent()?.["m.new_content"] as Record<string, unknown> | undefined,
-                replyTarget: parent
-                  ? { senderName: shortName(parent.getSender() ?? "?"), body: bodyOf(parent) }
-                  : null,
+                replyTarget: replyTargetMemo,
                 reactions: (ev.getId() && reactions.get(ev.getId()!)) || [],
                 onReact: (t, k) => void react(t, k),
                 poll: (() => {
@@ -480,6 +498,9 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
         myUserId={myUserId}
       />
       </div>
+      {secOpen && (
+        <SecuritySheet client={client} adapter={prodAdapter} onClose={() => setSecOpen(false)} />
+      )}
       {viewer !== null &&
         (() => {
           const imgEvents = groups.flatMap((g) => g.events).filter((e) => kindOf(e) === "image");

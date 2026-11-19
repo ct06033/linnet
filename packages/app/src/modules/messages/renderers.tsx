@@ -36,6 +36,7 @@ export interface TimelineItemProps {
   onVote?: (target: MatrixEvent, answerId: string) => void;
   onEndPoll?: (target: MatrixEvent) => void;
   onOpenImage?: (evId: string) => void;
+  onOpenSecurity?: () => void;
 }
 
 const QUICK_REACTIONS = ["👍", "❤️", "😂", "🎉", "😮", "😢", "🔥", "👀"];
@@ -163,11 +164,15 @@ function SystemBody(props: unknown): ReactNode {
 }
 
 function UtdBody(props: unknown): ReactNode {
-  const { ev } = props as TimelineItemProps;
+  const p = props as TimelineItemProps;
+  const { ev } = p;
   return (
     <div className="msg msg-utd" data-testid={`utd-${ev.getId()}`}>
       🔒 Unable to decrypt
-      <span className="utd-hint"> — this message is encrypted; key backup/verification help lands in Settings</span>
+      <span className="utd-hint"> — this message is encrypted. </span>
+      <button className="utd-help" onClick={() => p.onOpenSecurity?.()} data-testid="utd-help">
+        recover &amp; verify →
+      </button>
     </div>
   );
 }

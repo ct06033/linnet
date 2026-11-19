@@ -6,7 +6,7 @@
  * UTD and drafts — per docs/qa dev-exit items for the messaging core.
  */
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   MemoryKv,
   MemorySecrets,
@@ -130,6 +130,7 @@ function freshManager(): SessionManager {
       }),
     roomsLookup: () => [{ roomId: "!dev:hs.test", old: DEV_OLD }],
   });
+  vi.stubGlobal("fetch", fake);
   return new SessionManager({
     kv: new MemoryKv(),
     secrets: new MemorySecrets(),

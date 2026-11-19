@@ -145,3 +145,25 @@ main.roomview:not(.panel-open) .thread-panel { display: none; }
 .mention-menu button { display: flex; gap: 8px; align-items: baseline; width: 100%; text-align: left; border: none; background: transparent; color: inherit; padding: 6px 10px; cursor: pointer; font-size: 13px; }
 .mention-menu button.active, .mention-menu button:hover { background: rgba(79, 107, 237, .18); }
 .mention-menu code { font-size: 11px; opacity: .6; }
+.msg-image img.thumb { cursor: zoom-in; }
+.media-loading { padding: 6px 10px; border-radius: 8px; background: rgba(255,255,255,.05); font-style: italic; opacity: .7; font-size: 13px; }
+.voice-body { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-radius: 10px; background: rgba(255,255,255,.05); min-width: 220px; }
+.voice-play { border: none; background: var(--accent, #4f6bed); color: #fff; width: 30px; height: 30px; border-radius: 50%; cursor: pointer; flex: none; }
+.wave { display: flex; align-items: center; gap: 2px; height: 28px; flex: 1; cursor: pointer; }
+.wave i { flex: 1; min-width: 2px; background: rgba(79,107,237,.65); border-radius: 2px; }
+.voice-time { font-size: 12px; opacity: .7; flex: none; }
+.file-save { border: 1px solid var(--border,#333); background: transparent; color: inherit; border-radius: 8px; padding: 3px 10px; cursor: pointer; font-size: 12px; margin-left: 8px; }
+.file-size { font-size: 11px; opacity: .55; margin-left: 6px; }
+.voice-ready { border: none; background: transparent; color: inherit; cursor: pointer; font-size: 16px; }
+.voice-recording { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-bottom: 1px solid var(--border,#333); }
+.rec-dot { color: #e5484d; animation: recpulse 1s infinite; }
+@keyframes recpulse { 50% { opacity: .3; } }
+.rec-time { font-size: 12px; opacity: .8; }
+.rec-wave { display: flex; align-items: center; gap: 2px; height: 20px; flex: 1; }
+.rec-wave i { flex: 1; min-width: 2px; background: #e5484d; border-radius: 2px; }
+.viewer-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.85); z-index: 100; display: flex; align-items: center; justify-content: center; }
+.viewer-stage { display: flex; flex-direction: column; gap: 8px; max-width: 90vw; max-height: 90vh; }
+.viewer-img { max-width: 90vw; max-height: 80vh; object-fit: contain; border-radius: 6px; }
+.viewer-bar { display: flex; align-items: center; gap: 10px; color: #ddd; font-size: 13px; }
+.viewer-bar button { border: none; background: rgba(255,255,255,.12); color: #fff; border-radius: 8px; padding: 4px 10px; cursor: pointer; }
+.viewer-loading { color: #aaa; padding: 30px; }

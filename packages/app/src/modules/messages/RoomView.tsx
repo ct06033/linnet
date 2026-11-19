@@ -33,6 +33,7 @@ import {
 } from "./model.js";
 import { Composer, type ComposerMode } from "./Composer.js";
 import { ThreadPanel } from "./ThreadPanel.js";
+import { Viewer } from "../media/renderers.js";
 import type { TimelineItemProps } from "./renderers.js";
 
 export interface RoomViewProps {
@@ -50,6 +51,7 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
   const [joined, setJoined] = useState(true);
   const [openThread, setOpenThread] = useState<string | null>(null);
   const [pollBusy, setPollBusy] = useState(false);
+  const [viewer, setViewer] = useState<number | null>(null);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const pinnedBottom = useRef(true);
 
@@ -314,7 +316,12 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
               const editEv = ev.getId() ? edits.get(ev.getId()!) : undefined;
               const replyTo = replyTargetId(ev);
               const parent = replyTo ? eventsById.get(replyTo) : undefined;
+              const openImage = (id: string): void => {
+                const imgEvents = groups.flatMap((g) => g.events).filter((e) => kindOf(e) === "image");
+                setViewer(imgEvents.findIndex((e) => e.getId() === id));
+              };
               const props: TimelineItemProps = {
+                onOpenImage: openImage,
                 ev,
                 client,
                 myUserId,
@@ -473,6 +480,20 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
         myUserId={myUserId}
       />
       </div>
+      {viewer !== null &&
+        (() => {
+          const imgEvents = groups.flatMap((g) => g.events).filter((e) => kindOf(e) === "image");
+          if (viewer < 0 || viewer >= imgEvents.length) return null;
+          return (
+            <Viewer
+              client={client}
+              events={imgEvents}
+              index={viewer}
+              onClose={() => setViewer(null)}
+              onNav={(d) => setViewer((v) => Math.max(0, Math.min(imgEvents.length - 1, (v ?? 0) + d)))}
+            />
+          );
+        })()}
       {openThread && room && (
         <ThreadPanel
           client={client}

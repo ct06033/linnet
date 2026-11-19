@@ -10,6 +10,7 @@ import { mdToHtml, expandShortcodes, escapeHtml } from "./markdown.js";
 import { canNotifyRoom, detectMentions, displayNameOf } from "./model.js";
 import { bodyOf } from "./model.js";
 import { EmojiPicker } from "./EmojiPicker.js";
+import { isEncryptedRoom, prepareMediaContent, uploadBytes, uploadPeaks, VoiceRecorder } from "../media/core.js";
 
 export interface PollDraft {
   question: string;
@@ -241,18 +242,28 @@ export function Composer(props: ComposerProps): JSX.Element {
     setPollDraft(null);
   }
 
+  const [recording, setRecording] = useState<{ ms: number; peaks: number[] } | null>(null);
+  const recorderRef = useRef<VoiceRecorder | null>(null);
+
   async function attach(files: FileList | File[]): Promise<void> {
+    const encrypted = isEncryptedRoom(client, roomId);
     for (const file of Array.from(files)) {
       setUploading(file.name);
       try {
-        const up = await client.uploadContent(file);
-        const isImage = file.type.startsWith("image/");
-        await client.sendEvent(roomId, EventType.RoomMessage, {
-          msgtype: isImage ? "m.image" : "m.file",
-          body: file.name,
-          url: up.content_uri,
-          info: { mimetype: file.type, size: file.size },
-        } as never);
+        if (encrypted) {
+          const bytes = new Uint8Array(await file.arrayBuffer());
+          const content = await prepareMediaContent(client, bytes, file.name, file.type || "application/octet-stream", true);
+          await client.sendEvent(roomId, EventType.RoomMessage, content as never);
+        } else {
+          const up = await client.uploadContent(file);
+          const isImage = file.type.startsWith("image/");
+          await client.sendEvent(roomId, EventType.RoomMessage, {
+            msgtype: isImage ? "m.image" : "m.file",
+            body: file.name,
+            url: up.content_uri,
+            info: { mimetype: file.type, size: file.size },
+          } as never);
+        }
       } catch {
         /* honest no-op: upload failure leaves no ghost */
       } finally {
@@ -260,6 +271,75 @@ export function Composer(props: ComposerProps): JSX.Element {
       }
     }
   }
+
+  function startVoice(): void {
+    const rec = new VoiceRecorder();
+    rec
+      .start()
+      .then(() => {
+        recorderRef.current = rec;
+        setRecording({ ms: 0, peaks: [] });
+      })
+      .catch(() => {
+        recorderRef.current = null;
+        setRecording(null);
+      });
+  }
+
+  async function stopVoice(send: boolean): Promise<void> {
+    const rec = recorderRef.current;
+    recorderRef.current = null;
+    setRecording(null);
+    if (!rec) return;
+    if (!send) {
+      rec.cancel();
+      return;
+    }
+    const v = await rec.stop();
+    setUploading("voice message");
+    try {
+      const bytes = v.bytes;
+      const peaksMxc = await uploadPeaks(client, v.peaks);
+      const info: Record<string, unknown> = {
+        mimetype: v.mimetype || "audio/webm",
+        size: bytes.length,
+        json: { url: peaksMxc },
+        "org.matrix.msc1767.audio": {
+          duration: v.durationMs,
+          waveform: v.peaks.map((a) => ({ duration: 100, amplitude: a })),
+        },
+      };
+      if (isEncryptedRoom(client, roomId)) {
+        const content = await prepareMediaContent(client, bytes, "voice-message.webm", v.mimetype || "audio/webm", true);
+        await client.sendEvent(roomId, EventType.RoomMessage, {
+          ...content,
+          info,
+          "org.matrix.msc3245.voice": {},
+        } as never);
+      } else {
+        const url = await uploadBytes(client, bytes, v.mimetype || "audio/webm");
+        await client.sendEvent(roomId, EventType.RoomMessage, {
+          msgtype: "m.audio",
+          body: "Voice message",
+          "org.matrix.msc3245.voice": {},
+          info,
+          url,
+        } as never);
+      }
+    } finally {
+      setUploading(null);
+    }
+  }
+
+  useEffect(() => {
+    if (!recording) return;
+    const t = setInterval(() => {
+      const rec = recorderRef.current;
+      if (rec) setRecording({ ms: rec.elapsedMs(), peaks: rec.livePeaks() });
+    }, 250);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recording !== null]);
 
   return (
     <footer className="composer" data-testid="composer">
@@ -274,6 +354,24 @@ export function Composer(props: ComposerProps): JSX.Element {
         </div>
       )}
       {uploading && <div className="uploading">uploading {uploading}…</div>}
+      {!recording && VoiceRecorder.supported() && (
+        <button className="voice-ready" aria-label="Start voice message" onClick={startVoice} data-testid="voice-start">
+          🎤
+        </button>
+      )}
+      {recording && (
+        <div className="voice-recording" data-testid="voice-recording">
+          <span className="rec-dot">●</span>
+          <span className="rec-time">{Math.round(recording.ms / 1000)}s</span>
+          <div className="rec-wave">
+            {recording.peaks.slice(-40).map((p, i) => (
+              <i key={i} style={{ height: `${Math.max(10, (p / 1024) * 100)}%` }} />
+            ))}
+          </div>
+          <button aria-label="Cancel voice message" onClick={() => void stopVoice(false)} data-testid="voice-cancel">✕</button>
+          <button aria-label="Send voice message" onClick={() => void stopVoice(true)} data-testid="voice-send">Send</button>
+        </div>
+      )}
       {pollDraft ? (
         <div className="poll-editor" data-testid="poll-editor">
           <input

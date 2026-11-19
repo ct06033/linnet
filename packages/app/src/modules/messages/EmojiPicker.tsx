@@ -139,7 +139,19 @@ export function EmojiPicker({
   }, [query]);
 
   return (
-    <div className="emoji-picker" role="dialog" aria-label={label} ref={ref} data-testid={label}>
+    <div
+      className="emoji-picker"
+      role="dialog"
+      aria-label={label}
+      ref={ref}
+      data-testid={label}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          e.stopPropagation();
+          onClose();
+        }
+      }}
+    >
       <input
         autoFocus
         aria-label="Search emoji"

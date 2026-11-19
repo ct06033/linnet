@@ -155,6 +155,18 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
     return () => window.removeEventListener("keydown", onKey);
   }, [openThread]);
 
+  // W12 item 2: Esc also closes the settings panel and the image viewer
+  useEffect(() => {
+    if (!settingsOpen && viewer === null) return;
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== "Escape") return;
+      if (viewer !== null) setViewer(null);
+      else if (settingsOpen) setSettingsOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [settingsOpen, viewer]);
+
   // autoscroll + receipts
   useEffect(() => {
     const el = scrollerRef.current;

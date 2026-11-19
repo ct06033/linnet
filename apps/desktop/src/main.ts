@@ -92,6 +92,16 @@ function createWindow(): void {
   const win = new BrowserWindow({
     width: 1400,
     height: 900,
+    // W12a: three-pane floor. App CSS (packages/app/src/styles.css) pins the
+    // grid to rail 210px + roomlist 300px + timeline 1fr; the timeline's
+    // header/composer need ~390px → 900px is the narrowest content width with
+    // zero horizontal overflow. Height 560 keeps header + a few timeline rows
+    // + typing line + composer visible (roomlist/scroller own their scroll).
+    // minWidth/minHeight apply to the WINDOW (content shrinks with the frame);
+    // combined with html/body overflow:hidden the page never shows a body
+    // scrollbar at any allowed size.
+    minWidth: 900,
+    minHeight: 560,
     backgroundColor: "#101014",
     title: "Linnet",
     webPreferences: {

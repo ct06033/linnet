@@ -26,6 +26,10 @@ button[aria-pressed="true"] { background: var(--line); }
 .swatch[aria-pressed="true"] { border-color: var(--fg); }
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
+/* W12a: the app never scrolls at body level — panes own their scrolling
+   (.roomlist, .scroller); desktop enforces minWidth 900/minHeight 560 so
+   the three-pane grid can't squeeze past this floor. */
+html, body { overflow: hidden; }
 body { font: 14px/1.45 system-ui, "Inter", sans-serif; background: var(--bg); color: var(--fg); }
 .boot { display: grid; place-items: center; height: 100%; color: var(--fg-dim); }
 .login-wrap { display: grid; place-items: center; height: 100%; }

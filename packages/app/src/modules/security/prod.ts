@@ -3,7 +3,6 @@
  * functions + js-sdk verification primitives. The UI never touches js-sdk
  * crypto directly; everything funnels through here.
  */
-import { EventType } from "matrix-js-sdk";
 import type { MatrixClient } from "matrix-js-sdk";
 import {
   bootstrapSecurity,
@@ -97,23 +96,6 @@ export function handleFor(request: unknown): VerifyHandle {
   };
 }
 
-// ---------------------------------------------------------------- sessions DM
-
-function selfDmRoomId(client: MatrixClient, me: string): string | null {
-  // Synapse refuses invite:[self] (403 "already in the room", live-probed), so
-  // self-DMs are simply rooms where I am the ONLY member. m.direct may not
-  // index them; the sole-member rule is what actually identifies one.
-  void EventType;
-  for (const room of client.getRooms()) {
-    const jm = room.getJoinedMembers() as unknown;
-    const ids = (Array.isArray(jm) ? jm : Object.values((jm as object) ?? {})) as unknown as Array<Record<string, unknown>>;
-    const userIds = ids.map((m) => String(m.userId ?? m.user_id ?? ""));
-    const others = room.getMembers().filter((m) => m.membership !== "leave" && m.userId !== me);
-    if (userIds.length === 1 && userIds[0] === me && others.length === 0) return room.roomId;
-  }
-  return null;
-}
-
 // ---------------------------------------------------------------- adapter
 
 export const prodAdapter: SecurityAdapter = {
@@ -154,22 +136,38 @@ export const prodAdapter: SecurityAdapter = {
 
   async beginDeviceVerification(client, targetDeviceId) {
     const me = client.getUserId() ?? "";
-    const crypto = client.getCrypto?.() as unknown as
-      | { requestVerificationDM(u: string, r: string): Promise<unknown> }
+    const rc = client.getCrypto?.() as unknown as
+      | { requestDeviceVerification?(u: string, d: string): Promise<unknown> }
       | undefined;
-    if (!crypto?.requestVerificationDM) throw new Error("crypto unavailable");
-    let roomId = selfDmRoomId(client, me);
-    if (!roomId) {
-      roomId = (await (client as unknown as { createRoom(o: unknown): Promise<{ room_id: string }> }).createRoom({
-        // no invite — I create it alone; my OTHER session joins by sync
-        is_direct: true,
-      })).room_id;
-    }
-    const request = (await crypto.requestVerificationDM(me, roomId)) as RequestLike & {
+    // js-sdk 45's PUBLIC requestVerificationDM is broken for self-verification
+    // (wasm 18.9.2 OwnUserIdentity lacks verificationRequestContent); the
+    // runtime-only RustCrypto requestDeviceVerification(userId, deviceId)
+    // returns the standard js-sdk VerificationRequest wrapper and flushes
+    // outgoing requests itself — live-proven on HS-A (W5a-3).
+    if (!rc?.requestDeviceVerification) throw new Error("this build cannot start verification (crypto unavailable)");
+    const request = await rc.requestDeviceVerification(me, targetDeviceId);
+    // HS-A-probed protocol: the request waits at Ready until the other
+    // session accepts; the INITIATOR then calls startVerification exactly
+    // once. Repeat calls violate rust's state machine and CANCEL the flow.
+    const rq = request as {
       startVerification?(m: string): Promise<unknown>;
+      verifier?: unknown;
+      phase?: number;
     };
-    void request.startVerification?.("m.sas.v1");
-    void targetDeviceId; // the other device picks up the request; its device id rides the to-device flow
+    void (async () => {
+      for (let i = 0; i < 240; i++) {
+        if (rq.verifier) return;
+        if (rq.phase === 3) {
+          try {
+            await rq.startVerification?.("m.sas.v1");
+          } catch {
+            /* the other side may have started it already */
+          }
+          return;
+        }
+        await new Promise((r) => setTimeout(r, 500));
+      }
+    })();
     return handleFor(request);
   },
 

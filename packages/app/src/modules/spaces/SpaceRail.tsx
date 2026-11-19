@@ -26,6 +26,16 @@ export function SpaceRail({ spaces, active, onSelect, onCreate }: SpaceRailProps
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // W12 item 6: two-letter badge kept as an ICON, but the FULL space name
+  // always renders next to it — never abbreviated, never truncation-only.
+  const initialsOf = (n: string): string =>
+    n
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((w) => w[0]!.toUpperCase())
+      .join("") || "S";
+
   async function submit(): Promise<void> {
     if (!name.trim() || busy) return;
     setBusy(true);
@@ -55,12 +65,14 @@ export function SpaceRail({ spaces, active, onSelect, onCreate }: SpaceRailProps
       {spaces.map((s) => (
         <button
           key={s.roomId}
-          className={`space${active === s.roomId ? " active" : ""}`}
+          className={`space has-name${active === s.roomId ? " active" : ""}`}
           aria-label={`Space ${s.name}`}
-          title={s.name}
           onClick={() => onSelect(s.roomId)}
         >
-          {s.name.slice(0, 2).toUpperCase()}
+          <span className="space-ico" aria-hidden="true">
+            {initialsOf(s.name)}
+          </span>
+          <span className="space-name">{s.name}</span>
         </button>
       ))}
       <button className="space add" aria-label="New space" disabled={busy} onClick={() => setCreating(true)}>

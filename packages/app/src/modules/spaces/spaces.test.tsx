@@ -155,4 +155,23 @@ describe("W5b spaces", () => {
     // and it appears in the rail via the sync push (real flow, not optimistic UI)
     await screen.findByRole("button", { name: "Space Fun" });
   });
+
+  it("S9: a very long space name renders IN FULL beside its initials icon (item 6)", async () => {
+    const LONG = "The Royal Society for Inordinately Long Space Names";
+    const fetchFn = createFakeHomeserver({
+      accounts: [ALICE],
+      sync: () =>
+        makeSyncSnapshot({ userId: ALICE.userId, rooms: [{ roomId: "!spL:hs.test", name: LONG, space: true }] }),
+    });
+    setSessionManagerForTests(new SessionManager({ kv: new MemoryKv(), secrets: new MemorySecrets(), fetchFn }));
+    render(<App />);
+    await signIn();
+    const btn = await screen.findByRole("button", { name: `Space ${LONG}` });
+    // full, unwrapped text in the DOM — not the old two-letter abbreviation
+    const nameSpan = btn.querySelector(".space-name");
+    expect(nameSpan?.textContent).toBe(LONG);
+    // the icon survives, next to (not instead of) the name
+    expect(btn.querySelector(".space-ico")?.textContent).toBe("TR");
+    expect(btn.className).toContain("has-name");
+  });
 });

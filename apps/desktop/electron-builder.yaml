@@ -14,7 +14,7 @@ files:
   - dist-electron/**
   - package.json
 
-artifactName: \${productName}-\${version}-\${os}-\${arch}.\${ext}
+artifactName: ${productName}-${version}-${os}-${arch}.${ext}
 
 extraResources:
   - from: ../../packages/app/dist

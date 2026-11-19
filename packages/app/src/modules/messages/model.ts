@@ -17,11 +17,13 @@ export type EventKind =
   | "redacted"
   | "utd"
   | "reaction"
+  | "poll"
   | "unknown";
 
 export function kindOf(ev: MatrixEvent): EventKind {
   if (ev.isRedacted()) return "redacted";
   if (ev.getType() === "m.reaction") return "reaction";
+  if (ev.getType() === "m.poll.start") return "poll";
   if (ev.isState() && ev.getType() !== "m.room.message") return "system";
   if (ev.isEncrypted() && !ev.getClearContent()) return "utd";
   const msgtype = rawContentOf(ev)["msgtype"] as string | undefined;
@@ -124,6 +126,99 @@ export function isThreadReply(ev: MatrixEvent): boolean {
   return threadRootId(ev) !== null;
 }
 
+/* ── Polls (MSC3381, Matrix v1.7 stable shapes) ──────────────── */
+
+export interface PollStartInfo {
+  question: string;
+  answers: { id: string; text: string }[];
+  maxSelections: number;
+}
+
+export interface PollState {
+  start: PollStartInfo;
+  votes: Map<string, number>; // answerId -> count
+  voters: Set<string>;
+  myVote: string[];
+  ended: boolean;
+  endedBy?: string;
+}
+
+const POLL_ANSWER_ID = (a: unknown, i: number): string => {
+  const rec = a as Record<string, unknown>;
+  return String(rec["id"] ?? i);
+};
+
+export function parsePollStart(ev: MatrixEvent): PollStartInfo | null {
+  if (ev.getType() !== "m.poll.start") return null;
+  const c = rawContentOf(ev);
+  const question = c["question"] as Record<string, unknown> | undefined;
+  const answers = Array.isArray(c["answers"]) ? (c["answers"] as unknown[]) : [];
+  if (!question || answers.length === 0) return null;
+  return {
+    question: String(question["body"] ?? ""),
+    answers: answers.map((a, i) => ({
+      id: POLL_ANSWER_ID(a, i),
+      text: String((a as Record<string, unknown>)["body"] ?? (a as Record<string, unknown>)["m.text"] ?? ""),
+    })),
+    maxSelections: Number((c["max_selections"] as number | undefined) ?? 1),
+  };
+}
+
+function referenceId(ev: MatrixEvent): string | null {
+  const rel = (ev.getContent() as Record<string, unknown>)["m.relates_to"] as Record<string, unknown> | undefined;
+  if (rel?.["rel_type"] === "m.reference" && typeof rel["event_id"] === "string") return rel["event_id"];
+  return null;
+}
+
+/** Latest response per user wins; ends flip state; only own votes surface. */
+export function aggregatePolls(events: MatrixEvent[], myUserId: string | null): Map<string, PollState> {
+  const polls = new Map<string, PollState>();
+  for (const ev of events) {
+    const start = parsePollStart(ev);
+    const id = ev.getId();
+    if (start && id) {
+      polls.set(id, { start, votes: new Map(), voters: new Set(), myVote: [], ended: false });
+    }
+  }
+  if (polls.size === 0) return polls;
+  const latestByUser = new Map<string, { ts: number; answers: string[]; sender: string }>();
+  for (const ev of events) {
+    if (ev.getType() === "m.poll.end") {
+      const target = referenceId(ev);
+      const poll = target ? polls.get(target) : undefined;
+      if (poll) {
+        poll.ended = true;
+        poll.endedBy = ev.getSender() ?? undefined;
+      }
+      continue;
+    }
+    if (ev.getType() !== "m.poll.response") continue;
+    const target = referenceId(ev);
+    if (!target || !polls.has(target)) continue;
+    const sender = ev.getSender();
+    if (!sender) continue;
+    const answers = Array.isArray((ev.getContent() as Record<string, unknown>)["answers"])
+      ? ((ev.getContent() as Record<string, unknown>)["answers"] as unknown[]).map(String)
+      : [];
+    const key = `${target}|${sender}`;
+    const prev = latestByUser.get(key);
+    if (!prev || prev.ts <= ev.getTs()) latestByUser.set(key, { ts: ev.getTs(), answers, sender });
+  }
+  for (const [key, rec] of latestByUser) {
+    const targetId = key.split("|")[0]!;
+    const poll = polls.get(targetId)!;
+    poll.voters.add(rec.sender);
+    for (const a of rec.answers) poll.votes.set(a, (poll.votes.get(a) ?? 0) + 1);
+    if (rec.sender === myUserId) poll.myVote = rec.answers;
+  }
+  return polls;
+}
+
+export function isPollChild(ev: MatrixEvent): boolean {
+  const t = ev.getType();
+  return t === "m.poll.response" || t === "m.poll.end";
+}
+
 export interface EventGroup {
   sender: string;
   events: MatrixEvent[];
@@ -159,20 +254,26 @@ export function detectMentions(text: string, room: Room | null, myUserId: string
 } {
   const userIds = new Set<string>();
   let atRoom = false;
-  const members = room?.getJoinedMembers?.() ?? {};
+  const rawMembers = room?.getJoinedMembers?.() ?? {};
+  // js-sdk 45 returns an ARRAY of RoomMember here (docs still say dict — probed)
+  const memberIds = Array.isArray(rawMembers)
+    ? (rawMembers as Array<{ userId?: string }>).map((m) => m.userId ?? "")
+    : Object.keys(rawMembers as Record<string, unknown>);
   const localMatches = (needle: string): string[] => {
     const local = needle.replace(/^@/, "");
     const full = local.includes(":") ? local : myUserId ? local + ":" + myUserId.split(":").slice(1).join(":") : local;
-    return Object.keys(members).filter(
+    return memberIds.filter(
       (uid) => uid === `@${full}` || uid.split(":")[0] === `@${local}`,
     );
   };
-  for (const m of text.matchAll(/@([A-Za-z0-9._=\-/+]+(?::[A-Za-z0-9.\-]+)?)(?::|[\s.,!?)]|$)/g)) {
-    if (m[1] === "room") {
+  const tokenRe = /@([A-Za-z0-9._=\-+/]+(?::[A-Za-z0-9.\-]+)?)/g;
+  for (const m of text.matchAll(tokenRe)) {
+    const needle = m[0].slice(1);
+    if (needle === "room") {
       atRoom = true;
       continue;
     }
-    for (const uid of localMatches(m[1]!)) userIds.add(uid);
+    for (const uid of localMatches(needle)) userIds.add(uid);
   }
   return { userIds: [...userIds], atRoom };
 }

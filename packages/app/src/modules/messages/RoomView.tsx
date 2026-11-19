@@ -20,10 +20,12 @@ import {
 } from "matrix-js-sdk";
 import type { ModuleRegistry, TimelineItemContribution } from "@linnet/core";
 import {
+  aggregatePolls,
   aggregateReactions,
   bodyOf,
   displayNameOf,
   groupEvents,
+  isPollChild,
   isThreadReply,
   kindOf,
   latestEdits,
@@ -47,6 +49,7 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
   const [paginating, setPaginating] = useState(false);
   const [joined, setJoined] = useState(true);
   const [openThread, setOpenThread] = useState<string | null>(null);
+  const [pollBusy, setPollBusy] = useState(false);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const pinnedBottom = useRef(true);
 
@@ -89,7 +92,7 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
     // which would poison downstream useMemo identity deps (learned the hard way)
     const live = [...(room?.getLiveTimeline().getEvents() ?? [])];
     const pend = [...(room?.getPendingEvents() ?? [])];
-    const remote = live.filter((e) => !isAnnotation(e) && !isReplace(e) && !isThreadReply(e));
+    const remote = live.filter((e) => !isAnnotation(e) && !isReplace(e) && !isThreadReply(e) && !isPollChild(e));
     return { rawEvents: live, events: remote, pending: pend };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room, tick]);
@@ -103,6 +106,7 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
 
   const edits = useMemo(() => latestEdits([...rawEvents, ...pending]), [rawEvents, pending]);
   const reactions = useMemo(() => aggregateReactions(rawEvents, myUserId), [rawEvents, myUserId]);
+  const polls = useMemo(() => aggregatePolls(rawEvents, myUserId), [rawEvents, myUserId]);
   const threadByRoot = useMemo(() => {
     const m = new Map<string, { count: number; lastTs: number; participants: string[] }>();
     for (const t of room?.getThreads() ?? []) {
@@ -209,6 +213,38 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
 
   // reactions live in the timeline; annotation lookup scans rawEvents
 
+  async function sendVote(target: MatrixEvent, answerId: string): Promise<void> {
+    const tid = target.getId();
+    if (!tid || pollBusy) return;
+    setPollBusy(true);
+    try {
+      await client.sendEvent(roomId, "m.poll.response" as never, {
+        "m.relates_to": { rel_type: "m.reference", event_id: tid },
+        answers: [answerId],
+      } as never);
+    } catch (err) {
+      console.warn("linnet: poll vote failed", err);
+    } finally {
+      setPollBusy(false);
+    }
+    bump();
+  }
+
+  async function endPoll(target: MatrixEvent): Promise<void> {
+    const tid = target.getId();
+    if (!tid) return;
+    try {
+      await client.sendEvent(roomId, "m.poll.end" as never, {
+        "m.relates_to": { rel_type: "m.reference", event_id: tid },
+        question: { body: "Final results" },
+        answers: [],
+      } as never);
+    } catch (err) {
+      console.warn("linnet: end poll failed", err);
+    }
+    bump();
+  }
+
   async function undoLast(): Promise<void> {
     if (!lastAck) return;
     try {
@@ -289,6 +325,12 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
                   : null,
                 reactions: (ev.getId() && reactions.get(ev.getId()!)) || [],
                 onReact: (t, k) => void react(t, k),
+                poll: (() => {
+                  const pid = ev.getId();
+                  return pid ? polls.get(pid) : undefined;
+                })(),
+                onVote: (t, a) => void sendVote(t, a),
+                onEndPoll: (t) => void endPoll(t),
               };
               const failed = ev.status === EventStatus.NOT_SENT;
               const sending = ev.status === EventStatus.SENDING || ev.status === EventStatus.QUEUED;

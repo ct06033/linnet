@@ -3,12 +3,18 @@
  * via the registry seam, mentions with @room guard, typing notice, undo hook,
  * file attach + drag-drop upload.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { EventType, type MatrixClient, type MatrixEvent } from "matrix-js-sdk";
 import type { ModuleRegistry, SlashCommandContribution } from "@linnet/core";
 import { mdToHtml, expandShortcodes, escapeHtml } from "./markdown.js";
 import { canNotifyRoom, detectMentions, displayNameOf } from "./model.js";
 import { bodyOf } from "./model.js";
+import { EmojiPicker } from "./EmojiPicker.js";
+
+export interface PollDraft {
+  question: string;
+  options: string[];
+}
 
 export type ComposerMode =
   | { kind: "send" }
@@ -46,7 +52,53 @@ export function Composer(props: ComposerProps): JSX.Element {
   const [value, setValue] = useState(() => drafts.get(roomId) ?? "");
   const [rich, setRich] = useState(false);
   const [uploading, setUploading] = useState<string | null>(null);
+  const [pollDraft, setPollDraft] = useState<PollDraft | null>(null);
+  const [showEmoji, setShowEmoji] = useState(false);
+  const [mentionIdx, setMentionIdx] = useState(0);
   const areaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // mention autocomplete: trailing @token state
+  const mentionQuery = (() => {
+    const m = value.match(/(?:^|\s)@([A-Za-z0-9._=\-/]*)$/);
+    return m ? m[1]!.toLowerCase() : null;
+  })();
+  const mentionOptions = useMemo(() => {
+    if (mentionQuery === null) return [];
+    const room = client.getRoom(roomId);
+    const members = Object.values(room?.getJoinedMembers() ?? {});
+    return members
+      .filter((m) => {
+        const local = m.userId.split(":")[0]?.replace(/^@/, "") ?? "";
+        return (
+          m.userId.toLowerCase().includes(mentionQuery) ||
+          local.toLowerCase().includes(mentionQuery) ||
+          (m.display_name ?? "").toLowerCase().includes(mentionQuery)
+        );
+      })
+      .filter((m) => m.userId !== myUserId)
+      .slice(0, 6);
+  }, [mentionQuery, client, roomId, value, myUserId]);
+
+  function pickMention(userId: string): void {
+    const local = userId.split(":")[0]?.replace(/^@/, "") ?? userId;
+    const disp = displayNameOf(client, userId);
+    const label = disp && disp !== local ? disp.replace(/\s+/g, "") : userId;
+    const replacement = (label.startsWith("@") ? label : `@${label}`) + " ";
+    setValue((v) => {
+      const next = v.replace(/(^|\s)@([A-Za-z0-9._=\-/]*)$/, (_m, prefix: string) => `${prefix}${replacement}`);
+      drafts.set(roomId, next);
+      return next;
+    });
+    areaRef.current?.focus();
+  }
+
+  function insertEmoji(char: string): void {
+    setValue((v) => {
+      const next = v + char;
+      drafts.set(roomId, next);
+      return next;
+    });
+  }
 
   useEffect(() => {
     setValue(drafts.get(roomId) ?? "");
@@ -73,6 +125,11 @@ export function Composer(props: ComposerProps): JSX.Element {
     // slash commands through the registry (PRD §6.9)
     const slash = text.match(/^\/(\S+)(?:\s+([\s\S]*))?$/);
     if (slash && mode.kind === "send") {
+      if (slash[1]!.toLowerCase() === "poll") {
+        update("");
+        setPollDraft({ question: (slash[2] ?? "").trim(), options: ["", ""] });
+        return;
+      }
       const cmd = registry
         ?.list("slash-command")
         .find((c: SlashCommandContribution) => c.command === `/${slash[1]}`);
@@ -167,6 +224,23 @@ export function Composer(props: ComposerProps): JSX.Element {
     }
   }
 
+  async function sendPoll(): Promise<void> {
+    if (!pollDraft) return;
+    const opts = pollDraft.options.map((o) => o.trim()).filter(Boolean);
+    const question = pollDraft.question.trim();
+    if (!question || opts.length < 2) return;
+    try {
+      await client.sendEvent(roomId, "m.poll.start" as never, {
+        question: { body: expandShortcodes(question) },
+        answers: opts.map((t, i) => ({ id: String(i + 1), body: expandShortcodes(t) })),
+        max_selections: 1,
+      } as never);
+    } catch (err) {
+      console.warn("linnet: poll create failed", err);
+    }
+    setPollDraft(null);
+  }
+
   async function attach(files: FileList | File[]): Promise<void> {
     for (const file of Array.from(files)) {
       setUploading(file.name);
@@ -200,51 +274,148 @@ export function Composer(props: ComposerProps): JSX.Element {
         </div>
       )}
       {uploading && <div className="uploading">uploading {uploading}…</div>}
-      <div className="composer-row">
-        <textarea
-          ref={areaRef}
-          aria-label="Message"
-          rows={1}
-          value={value}
-          placeholder="Message"
-          onChange={(e) => update(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              void submit();
-            } else if (e.key === "Escape" && mode.kind !== "send") {
-              onModeReset();
-            }
-          }}
-          onDrop={(e) => {
-            e.preventDefault();
-            if (e.dataTransfer.files.length > 0) void attach(e.dataTransfer.files);
-          }}
-          onDragOver={(e) => e.preventDefault()}
-        />
-        <div className="composer-buttons">
-          <button
-            aria-label="toggle formatting"
-            className={rich ? "on" : ""}
-            onClick={() => setRich((v) => !v)}
-            title="Markdown formatting on/off"
-          >
-            Aa
-          </button>
-          <label className="attach" title="Attach file">
-            📎
-            <input
-              type="file"
-              hidden
-              aria-label="Attach file"
-              onChange={(e) => e.target.files && void attach(e.target.files)}
-            />
-          </label>
-          <button aria-label="Send message" onClick={() => void submit()} disabled={!value.trim()}>
-            Send
-          </button>
+      {pollDraft ? (
+        <div className="poll-editor" data-testid="poll-editor">
+          <input
+            aria-label="Poll question"
+            placeholder="Question"
+            value={pollDraft.question}
+            onChange={(e) => setPollDraft({ ...pollDraft, question: e.target.value })}
+          />
+          {pollDraft.options.map((opt, i) => (
+            <div className="poll-opt-row" key={i}>
+              <input
+                aria-label={`Poll option ${i + 1}`}
+                placeholder={`Option ${i + 1}`}
+                value={opt}
+                onChange={(e) => {
+                  const options = [...pollDraft.options];
+                  options[i] = e.target.value;
+                  setPollDraft({ ...pollDraft, options });
+                }}
+              />
+              {pollDraft.options.length > 2 && (
+                <button
+                  aria-label={`Remove option ${i + 1}`}
+                  onClick={() => setPollDraft({ ...pollDraft, options: pollDraft.options.filter((_, j) => j !== i) })}
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+          ))}
+          <div className="poll-editor-actions">
+            <button onClick={() => setPollDraft({ ...pollDraft, options: [...pollDraft.options, ""] })}>
+              + Add option
+            </button>
+            <button
+              aria-label="Create poll"
+              disabled={!pollDraft.question.trim() || pollDraft.options.filter((o) => o.trim()).length < 2}
+              onClick={() => void sendPoll()}
+            >
+              Create poll
+            </button>
+            <button aria-label="Cancel poll" onClick={() => setPollDraft(null)}>
+              Cancel
+            </button>
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className="composer-row" style={{ position: "relative" }}>
+          {mentionOptions.length > 0 && (
+            <ul className="mention-menu" role="listbox" aria-label="Mention suggestions" data-testid="mention-menu">
+              {mentionOptions.map((m, i) => (
+                <li key={m.userId}>
+                  <button
+                    className={i === mentionIdx ? "active" : ""}
+                    role="option"
+                    aria-selected={i === mentionIdx}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      pickMention(m.userId);
+                    }}
+                  >
+                    {displayNameOf(client, m.userId)} <code>{m.userId}</code>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <textarea
+            ref={areaRef}
+            aria-label="Message"
+            rows={1}
+            value={value}
+            placeholder="Message"
+            onChange={(e) => {
+              setMentionIdx(0);
+              update(e.target.value);
+            }}
+            onKeyDown={(e) => {
+              if (mentionOptions.length > 0) {
+                if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setMentionIdx((i) => (i + (e.key === "ArrowDown" ? 1 : mentionOptions.length - 1)) % mentionOptions.length);
+                  return;
+                }
+                if ((e.key === "Enter" && !e.shiftKey) || e.key === "Tab") {
+                  e.preventDefault();
+                  pickMention(mentionOptions[mentionIdx]!.userId);
+                  return;
+                }
+                if (e.key === "Escape") {
+                  return;
+                }
+              }
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                void submit();
+              } else if (e.key === "Escape" && mode.kind !== "send") {
+                onModeReset();
+              }
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              if (e.dataTransfer.files.length > 0) void attach(e.dataTransfer.files);
+            }}
+            onDragOver={(e) => e.preventDefault()}
+          />
+          <div className="composer-buttons">
+            <span className="picker-anchor">
+              <button
+                aria-label="Insert emoji"
+                onClick={() => setShowEmoji((v) => !v)}
+                title="Emoji"
+              >
+                😊
+              </button>
+              {showEmoji && (
+                <EmojiPicker label="Emoji picker" onSelect={insertEmoji} onClose={() => setShowEmoji(false)} />
+              )}
+            </span>
+            <button
+              aria-label="toggle formatting"
+              className={rich ? "on" : ""}
+              onClick={() => setRich((v) => !v)}
+              title="Markdown formatting on/off"
+            >
+              Aa
+            </button>
+            <label className="attach" title="Attach file">
+              📎
+              <input
+                type="file"
+                hidden
+                aria-label="Attach file"
+                onChange={(e) => e.target.files && void attach(e.target.files)}
+              />
+            </label>
+            <button aria-label="Send message" onClick={() => void submit()} disabled={!value.trim()}>
+              Send
+            </button>
+          </div>
+        </div>
+      )}
     </footer>
   );
 }

@@ -1,8 +1,9 @@
 /**
  * Linnet desktop shell (PRD §4). The renderer does everything; main only owns
- * windows, config resolution and OS integration (notifications/tray come later waves).
+ * windows, config resolution and OS-backed storage (accounts kv + safeStorage
+ * secrets). Notifications/tray land W6.
  */
-import { app, BrowserWindow, ipcMain } from "electron";
+import { app, BrowserWindow, ipcMain, safeStorage } from "electron";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -31,11 +32,60 @@ function loadConfig(): Record<string, unknown> {
 }
 
 function rendererDir(): string {
-  // packaged: electron-builder extraResources -> <resources>/renderer
-  // dev/worktree: packages/app/dist
   const packaged = path.join(process.resourcesPath ?? "", "renderer");
   if (fs.existsSync(path.join(packaged, "index.html"))) return packaged;
   return path.resolve(__dirname, "../../..", "packages/app/dist");
+}
+
+// ---- storage ports (kv = userData JSON; secrets = safeStorage-encrypted files)
+// NOTE: the accounts KV key name must match core ACCOUNTS_KV_KEY.
+const safeName = (key: string): string => key.replace(/[^a-zA-Z0-9._-]/g, "_");
+// generic KV: one JSON file per key under userData/kv/ — no hardcoded key names
+const kvFile = (key: string): string => path.join(app.getPath("userData"), "kv", safeName(key) + ".json");
+const secretsDir = (): string => path.join(app.getPath("userData"), "secrets");
+
+function kvRead(key: string): string | null {
+  try {
+    return fs.readFileSync(kvFile(key), "utf8");
+  } catch {
+    return null;
+  }
+}
+function kvWrite(key: string, value: string): void {
+  fs.mkdirSync(path.dirname(kvFile(key)), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(kvFile(key), value, { mode: 0o600 });
+}
+function kvRemove(key: string): void {
+  if (fs.existsSync(kvFile(key))) fs.rmSync(kvFile(key));
+}
+
+function secretSave(key: string, value: string): void {
+  fs.mkdirSync(secretsDir(), { recursive: true, mode: 0o700 });
+  const file = path.join(secretsDir(), `${safeName(key)}.bin`);
+  let payload: Buffer | string;
+  if (safeStorage.isEncryptionAvailable()) {
+    payload = safeStorage.encryptString(value);
+  } else {
+    console.warn("linnet: OS keychain unavailable — token stored UNENCRYPTED (disk-user-only)");
+    payload = JSON.stringify({ unencrypted: value });
+  }
+  fs.writeFileSync(file, payload, { mode: 0o600 });
+}
+function secretLoad(key: string): string | null {
+  const file = path.join(secretsDir(), `${safeName(key)}.bin`);
+  if (!fs.existsSync(file)) return null;
+  const raw = fs.readFileSync(file);
+  try {
+    const dec = JSON.parse(raw.toString("utf8")) as { unencrypted?: string };
+    if (dec.unencrypted) return dec.unencrypted;
+  } catch {
+    /* not the plaintext envelope -> must be safeStorage ciphertext */
+  }
+  return safeStorage.decryptString(raw);
+}
+function secretRemove(key: string): void {
+  const file = path.join(secretsDir(), `${safeName(key)}.bin`);
+  if (fs.existsSync(file)) fs.rmSync(file);
 }
 
 function createWindow(): void {
@@ -67,6 +117,12 @@ if (!gotLock) {
     if (win) win.focus();
   });
   ipcMain.handle("linnet:get-config", () => loadConfig());
+  ipcMain.handle("linnet:kv:get", (_e, key: string) => kvRead(key));
+  ipcMain.handle("linnet:kv:set", (_e, key: string, value: string) => kvWrite(key, value));
+  ipcMain.handle("linnet:kv:remove", (_e, key: string) => kvRemove(key));
+  ipcMain.handle("linnet:secret:save", (_e, key: string, value: string) => secretSave(key, value));
+  ipcMain.handle("linnet:secret:load", (_e, key: string) => secretLoad(key));
+  ipcMain.handle("linnet:secret:remove", (_e, key: string) => secretRemove(key));
   app.whenReady().then(() => {
     createWindow();
     app.on("activate", () => {

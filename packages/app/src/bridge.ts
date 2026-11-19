@@ -1,15 +1,27 @@
-/** Window bridge injected by apps/desktop preload; web build gets a fallback. */
+/** Window bridge injected by apps/desktop preload; web build gets fallbacks. */
 import type { LinnetConfig } from "@linnet/core";
 
-export interface LinnetWindowBridge {
-  getConfig(): Promise<Partial<LinnetConfig>>;
-  platform: string;
-  version: string;
+export interface KvBridge {
+  get(key: string): Promise<string | null>;
+  set(key: string, value: string): Promise<void>;
+  remove(key: string): Promise<void>;
+}
+
+export interface SecretBridge {
+  save(key: string, value: string): Promise<void>;
+  load(key: string): Promise<string | null>;
+  remove(key: string): Promise<void>;
 }
 
 declare global {
   interface Window {
-    linnet?: LinnetWindowBridge;
+    linnet?: {
+      getConfig(): Promise<Partial<LinnetConfig>>;
+      platform: string;
+      version: string;
+      kv?: KvBridge;
+      secrets?: SecretBridge;
+    };
   }
 }
 

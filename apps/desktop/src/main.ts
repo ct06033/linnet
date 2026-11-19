@@ -89,9 +89,17 @@ function secretRemove(key: string): void {
 }
 
 function createWindow(): void {
+  // W12a: Linux window/taskbar icon. Packaged runs find it inside the asar
+  // (electron-builder.yaml `files` ships build/icon.png; Electron's fs shims
+  // read asar paths); dev runs resolve apps/desktop/build/icon.png. The
+  // app-grid icon itself comes from the .desktop Icon= key (hicolor set from
+  // build/icons/ — see scripts/gen-linux-icons.mjs); this paints the X11
+  // _NET_WM_ICON for taskbars/docks that key off the window instead.
+  const iconPath = path.join(__dirname, "..", "build", "icon.png");
   const win = new BrowserWindow({
     width: 1400,
     height: 900,
+    ...(fs.existsSync(iconPath) ? { icon: iconPath } : {}),
     // W12a: three-pane floor. App CSS (packages/app/src/styles.css) pins the
     // grid to rail 210px + roomlist 300px + timeline 1fr; the timeline's
     // header/composer need ~390px → 900px is the narrowest content width with

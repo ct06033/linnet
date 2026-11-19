@@ -7,3 +7,6 @@ coverage/
 .DS_Store
 .env
 linnet-deviceb-*.mjs
+
+# AppImage inspect artifact (electron-builder --dir verification)
+squashfs-root/

@@ -1,0 +1,25 @@
+{
+  "name": "linnet",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Linnet - a Matrix client between Element and Cinny (desktop-first, Electron, AGPL-3.0-only).",
+  "license": "AGPL-3.0-only",
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@12.3.4",
+  "scripts": {
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check:builder-config": "node scripts/validate-builder-config.mjs",
+    "bench": "node scripts/perf-harness/bench.mjs"
+  },
+  "devDependencies": {
+    "prettier": "^3.10.1",
+    "typescript": "^7.0.2",
+    "yaml": "^2.9.1"
+  }
+}

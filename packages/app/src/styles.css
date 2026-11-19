@@ -116,6 +116,10 @@ main.roomview { display: flex; flex-direction: column; height: 100%; min-height:
 .room-header .sub { display: flex; gap: 12px; font-size: 12px; opacity: .7; }
 .room-header .topic { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60ch; }
 .scroller { flex: 1; overflow-y: auto; padding: 8px 16px; min-height: 0; }
+/* W12 item 13: plain text button — no box, no border, reads as a link */
+.load-earlier { display: block; margin: 2px auto 6px; border: 0; background: transparent; color: var(--accent-link, var(--accent, #4f6bed)); font: inherit; font-size: 13px; cursor: pointer; padding: 2px 6px; border-radius: 4px; }
+.load-earlier:hover { text-decoration: underline; }
+.load-earlier:disabled { opacity: .6; cursor: default; }
 .earlier { text-align: center; padding: 4px 0; }
 .group { margin-bottom: 2px; }
 .row { display: flex; gap: 10px; padding: 2px 8px; position: relative; }

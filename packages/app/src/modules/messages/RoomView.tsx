@@ -339,7 +339,7 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
           const tlType: EventTimeline | null = room?.getLiveTimeline() ?? null;
           void tlType;
           return token ? (
-            <button onClick={() => void loadEarlier()} disabled={paginating}>
+            <button className="load-earlier" onClick={() => void loadEarlier()} disabled={paginating}>
               {paginating ? "loading…" : "Load earlier messages"}
             </button>
           ) : null;

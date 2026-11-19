@@ -1,6 +1,7 @@
 /**
  * W12 timeline chrome: item 10 (own messages visibly distinct via .mine +
- * accent-derived bubble). Driven through the real js-sdk + fake homeserver.
+ * accent-derived bubble) and item 13 ("Load earlier messages" as a plain
+ * text button — no box). Driven through the real js-sdk + fake homeserver.
  */
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -126,5 +127,25 @@ describe("W12 item 10 — own message treatment", () => {
     const el = await screen.findByText("mine now");
     const row = el.closest(".row")!;
     await waitFor(() => expect(row.className).toContain("mine"));
+  });
+});
+
+describe("W12 item 13 — Load earlier messages is a plain text button", () => {
+  beforeEach(() => {
+    (globalThis as Record<string, unknown>).XMLHttpRequest = undefined;
+    setSessionManagerForTests(freshManager());
+  });
+  afterEach(() => setSessionManagerForTests(freshManager()));
+
+  it("the control carries .load-earlier, CSS drops the box/border, pagination works", async () => {
+    await signInAndOpen();
+    const btn = await screen.findByText("Load earlier messages");
+    expect(btn.closest("button")!.className).toContain("load-earlier");
+    fireEvent.click(btn);
+    expect(await screen.findByText("OLDER")).toBeTruthy();
+    // styling contract: no border, transparent background = text-link feel
+    const css = readFileSync("src/styles.css", "utf8");
+    expect(css).toMatch(/\.load-earlier \{[^}]*border: 0/);
+    expect(css).toMatch(/\.load-earlier \{[^}]*background: transparent/);
   });
 });

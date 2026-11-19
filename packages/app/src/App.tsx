@@ -233,9 +233,9 @@ export function App(): ReactNode {
             setSpaceId(id);
             setAddOpen(false);
           }}
-          onCreate={async (name, isPublic) => {
+          onCreate={async (name, isPublic, encrypt) => {
             if (!clientForView) throw new Error("not signed in");
-            const id = await createSpace(clientForView, { name, isPublic });
+            const id = await createSpace(clientForView, { name, isPublic, encrypt });
             setSpaceId(id);
           }}
         />

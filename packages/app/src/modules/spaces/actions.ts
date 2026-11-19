@@ -14,16 +14,31 @@ import { Preset, Visibility } from "matrix-js-sdk/lib/@types/partials.js";
 
 export const SPACE_CHILD = EventType.SpaceChild;
 
+/** W12a: the one and only Megolm algorithm we create rooms with. */
+export const MEGOLM_ALGORITHM = "m.megolm.v1.aes-sha2";
+
 export async function createSpace(
   client: MatrixClient,
-  opts: { name: string; isPublic: boolean; topic?: string },
+  opts: { name: string; isPublic: boolean; topic?: string; encrypt?: boolean },
 ): Promise<string> {
+  // W12a E2EE-default: every new space starts encrypted UNLESS the user
+  // explicitly opts out (encrypt:false). Public rooms are the one forced
+  // exception — Megolm key distribution into a world-readable room is
+  // meaningless (and Element enforces the same ban) — so public implies off.
+  const encrypt = opts.encrypt !== false && !opts.isPublic;
   const res = await client.createRoom({
     name: opts.name,
     ...(opts.topic ? { topic: opts.topic } : {}),
     visibility: opts.isPublic ? Visibility.Public : Visibility.Private,
     preset: opts.isPublic ? Preset.PublicChat : Preset.PrivateChat,
     creation_content: { type: "m.space" },
+    ...(encrypt
+      ? {
+          initial_state: [
+            { type: "m.room.encryption", state_key: "", content: { algorithm: MEGOLM_ALGORITHM } },
+          ],
+        }
+      : {}),
   });
   return res.room_id;
 }

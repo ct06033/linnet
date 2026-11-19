@@ -152,4 +152,62 @@ describe("W5b spaces", () => {
     // and it appears in the rail via the sync push (real flow, not optimistic UI)
     await screen.findByRole("button", { name: "Space Fun" });
   });
+
+  // W12a E2EE-default UI: the Encrypt toggle ships ON; opting out (and going
+  // public, which forces it off) are the user's actions.
+  it("W12a: create dialog defaults Encrypt ON and sends m.room.encryption", async () => {
+    render(<App />);
+    await waitForRooms();
+    fireEvent.click(screen.getByRole("button", { name: "New space" }));
+    const encBox = (await screen.findByRole("checkbox", { name: "Encrypt space (E2EE)" })) as HTMLInputElement;
+    expect(encBox.checked).toBe(true);
+    const dialog = screen.getByRole("dialog", { name: "Create a new space" });
+    fireEvent.change(dialog.querySelector("input[aria-label='Space name']") as HTMLInputElement, {
+      target: { value: "Crypt" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create space" }));
+    await waitFor(() =>
+      expect(
+        controls.calls.find(
+          (c) =>
+            c.method === "POST" &&
+            c.path.endsWith("/createRoom") &&
+            JSON.stringify((c.body as Record<string, unknown>)?.["initial_state"]) ===
+              '[{"type":"m.room.encryption","state_key":"","content":{"algorithm":"m.megolm.v1.aes-sha2"}}]',
+        ),
+      ).toBeTruthy(),
+    );
+  });
+
+  it("W12a: unchecking Encrypt opts out (no initial_state on the wire)", async () => {
+    render(<App />);
+    await waitForRooms();
+    fireEvent.click(screen.getByRole("button", { name: "New space" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Encrypt space (E2EE)" }));
+    const dialog = screen.getByRole("dialog", { name: "Create a new space" });
+    fireEvent.change(dialog.querySelector("input[aria-label='Space name']") as HTMLInputElement, {
+      target: { value: "Plain" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create space" }));
+    await waitFor(() =>
+      expect(
+        controls.calls.find((c) => c.method === "POST" && c.path.endsWith("/createRoom")),
+      ).toBeTruthy(),
+    );
+    const body = controls.calls
+      .filter((c) => c.method === "POST" && c.path.endsWith("/createRoom"))
+      .map((c) => c.body as Record<string, unknown>);
+    expect(body.some((b) => b["initial_state"] !== undefined)).toBe(false);
+  });
+
+  it("W12a: Public forces the Encrypt toggle off + disabled", async () => {
+    render(<App />);
+    await waitForRooms();
+    fireEvent.click(screen.getByRole("button", { name: "New space" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Public space" }));
+    const encBox = screen.getByRole("checkbox", { name: "Encrypt space (E2EE)" }) as HTMLInputElement;
+    expect(encBox.disabled).toBe(true);
+    expect(encBox.checked).toBe(false);
+  });
+
 });

@@ -41,6 +41,30 @@ describe("createSpace (T2a/T2b)", () => {
     expect(body["visibility"]).toBe("public");
     expect(body["preset"]).toBe("public_chat");
   });
+
+  // W12a E2EE-default: new rooms start encrypted; 'off' must be an explicit opt-out.
+  it("private spaces default to initial_state m.room.encryption (W12a)", async () => {
+    const { client, calls } = harness();
+    await createSpace(client, { name: "Secured", isPublic: false });
+    const body = calls.find((c) => c.path.endsWith("/createRoom"))?.body as Record<string, unknown>;
+    expect(body["initial_state"]).toEqual([
+      { type: "m.room.encryption", state_key: "", content: { algorithm: "m.megolm.v1.aes-sha2" } },
+    ]);
+  });
+
+  it("encrypt:false opts out explicitly (W12a)", async () => {
+    const { client, calls } = harness();
+    await createSpace(client, { name: "Plain", isPublic: false, encrypt: false });
+    const body = calls.find((c) => c.path.endsWith("/createRoom"))?.body as Record<string, unknown>;
+    expect(body["initial_state"]).toBeUndefined();
+  });
+
+  it("public spaces never ship the encryption event (forced opt-out)", async () => {
+    const { client, calls } = harness();
+    await createSpace(client, { name: "Pub", isPublic: true, encrypt: true });
+    const body = calls.find((c) => c.path.endsWith("/createRoom"))?.body as Record<string, unknown>;
+    expect(body["initial_state"]).toBeUndefined();
+  });
 });
 
 describe("m.space.child sends (T2c/T2d)", () => {

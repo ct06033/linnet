@@ -13,7 +13,7 @@ export interface SpaceRailProps {
   active: string | null;
   onSelect: (spaceId: string | null) => void;
   /** Create-space dialog submits here; rejection surfaces the message. */
-  onCreate: (name: string, isPublic: boolean) => Promise<void>;
+  onCreate: (name: string, isPublic: boolean, encrypt: boolean) => Promise<void>;
 }
 
 export function SpaceRail({ spaces, active, onSelect, onCreate }: SpaceRailProps): ReactNode {
@@ -23,6 +23,8 @@ export function SpaceRail({ spaces, active, onSelect, onCreate }: SpaceRailProps
   useModalA11y(dialogRef, () => setCreating(false), creating);
   const [name, setName] = useState("");
   const [isPublic, setIsPublic] = useState(false);
+  // W12a E2EE-default: encryption starts ON — the opt-OUT is the user action.
+  const [encrypt, setEncrypt] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -31,10 +33,13 @@ export function SpaceRail({ spaces, active, onSelect, onCreate }: SpaceRailProps
     setBusy(true);
     setError(null);
     try {
-      await onCreate(name.trim(), isPublic);
+      // public spaces cannot be encrypted (key distribution into a
+      // world-readable room is meaningless) — the toggle forces off there
+      await onCreate(name.trim(), isPublic, encrypt && !isPublic);
       setCreating(false);
       setName("");
       setIsPublic(false);
+      setEncrypt(true);
     } catch (err) {
       setError(String((err as Error)?.message ?? err));
     } finally {
@@ -81,8 +86,24 @@ export function SpaceRail({ spaces, active, onSelect, onCreate }: SpaceRailProps
             />
           </label>
           <label className="check">
-            <input type="checkbox" aria-label="Public space" checked={isPublic} onChange={(e) => setIsPublic(e.target.checked)} />
+            <input
+              type="checkbox"
+              aria-label="Public space"
+              checked={isPublic}
+              onChange={(e) => setIsPublic(e.target.checked)}
+            />
             Public
+          </label>
+          <label className="check">
+            <input
+              type="checkbox"
+              aria-label="Encrypt space (E2EE)"
+              checked={encrypt && !isPublic}
+              disabled={isPublic}
+              onChange={(e) => setEncrypt(e.target.checked)}
+            />
+            Encrypt (E2EE)
+            {isPublic && <span className="hint"> — public rooms cannot be encrypted</span>}
           </label>
           <div className="dialog-actions">
             <button onClick={() => setCreating(false)} disabled={busy}>

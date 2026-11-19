@@ -5,3 +5,4 @@ export * from "./accounts.js";
 export * from "./session.js";
 export * from "./fake-homeserver.js";
 export * from "./relay-homeserver.js";
+export * from "./e2ee.js";

@@ -284,7 +284,6 @@ export function createRelayHomeserver(config: RelayConfig): RelayHomeserver {
     }
 
     if (segs.at(-2) === "keys" && segs.at(-1) === "query" && method === "POST") {
-      console.warn("RELAY QUERY:", JSON.stringify(body.device_keys));
       const req = (body.device_keys ?? {}) as Record<string, string[]>;
       const out: Record<string, Record<string, unknown>> = {};
       for (const userId of Object.keys(req)) {
@@ -301,7 +300,6 @@ export function createRelayHomeserver(config: RelayConfig): RelayHomeserver {
     }
 
     if (segs.at(-2) === "keys" && segs.at(-1) === "claim" && method === "POST") {
-      console.warn("RELAY CLAIM REQ:", JSON.stringify(body.one_time_keys));
       const req = (body.one_time_keys ?? {}) as Record<string, Record<string, string>>;
       const claimed: Record<string, Record<string, Record<string, unknown>>> = {};
       for (const [userId, devices] of Object.entries(req)) {
@@ -320,7 +318,6 @@ export function createRelayHomeserver(config: RelayConfig): RelayHomeserver {
 
     if (segs.at(-2) === "keys" && segs.at(-1) === "changes") return jsonRes({ changed: [], left: [] });
 
-    console.warn("RELAY UNHANDLED:", method, path);
     return jsonRes({});
   };
 

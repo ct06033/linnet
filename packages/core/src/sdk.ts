@@ -1,4 +1,5 @@
 import { createClient, type MatrixClient } from "matrix-js-sdk";
+import { getBootstrapKey } from "./e2ee.js";
 
 /**
  * Thin seam over matrix-js-sdk (pinned stable, never develop — PRD §4).
@@ -22,11 +23,25 @@ export function createClientSession(opts: SessionOptions): MatrixClient {
   if (!/^https?:\/\//.test(opts.homeserverUrl)) {
     throw new Error(`homeserverUrl must be an http(s) URL, got: ${opts.homeserverUrl}`);
   }
-  return createClient({
+  // 4S bootstrap stores cross-signing secrets into a brand-new key in the same
+  // call; the getSecretStorageKey callback (fixed at createClient time) finds
+  // that key via the per-client holder in e2ee.ts. Single-SSSS-key product
+  // assumption: match the first advertised key id (re-key flows land later).
+  let self: MatrixClient;
+  const client = createClient({
     baseUrl: opts.homeserverUrl,
     accessToken: opts.accessToken,
     deviceId: opts.deviceId,
     userId: opts.userId,
     fetchFn: opts.fetchFn,
+    cryptoCallbacks: {
+      getSecretStorageKey: async ({ keys }: { keys: Record<string, unknown> }, _name: string) => {
+        const privateKey = self ? getBootstrapKey(self) : undefined;
+        const keyId = Object.keys(keys ?? {})[0];
+        return privateKey && keyId ? [keyId, privateKey] : null;
+      },
+    },
   });
+  self = client;
+  return client;
 }

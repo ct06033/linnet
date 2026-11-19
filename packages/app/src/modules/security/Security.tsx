@@ -91,6 +91,18 @@ export function SecuritySheet(props: SheetProps): ReactNode {
   }, [adapter, client]);
   useEffect(() => refresh(), [refresh]);
 
+  // W12 item 2: the sheet is fixed-position chrome without useModalA11y;
+  // Escape must close it like every other openable surface
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === "Escape") closeRef.current();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   // while the sheet is open, an incoming verification from another session
   // takes over the panel (MVP scope; a global nudge centre is P2 per PRD)
   useEffect(() => {

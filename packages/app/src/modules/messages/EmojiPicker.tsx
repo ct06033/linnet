@@ -2,7 +2,8 @@
  * Curated emoji picker (MVP: ~240 frequently used, searchable) + full
  * shortcode table used by the composer pipeline. No dependencies.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
+import { useClickAway } from "../a11y.js";
 
 const GROUPS: { label: string; emojis: [string, string][] }[] = [
   {
@@ -120,18 +121,9 @@ export function EmojiPicker({
 }): JSX.Element {
   const [query, setQuery] = useState("");
   const ref = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    const onDoc = (e: MouseEvent): void => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
-    };
-    // click-away on next tick so the opening click does not bounce-close
-    const t = setTimeout(() => document.addEventListener("click", onDoc, true), 0);
-    return () => {
-      clearTimeout(t);
-      document.removeEventListener("click", onDoc, true);
-    };
-  }, [onClose]);
+  // W12 item 2: pointerdown outside closes; Escape too (not a modal, no
+  // useModalA11y here)
+  useClickAway(ref, onClose, true);
 
   const results = useMemo(() => {
     const q = query.trim().toLowerCase();

@@ -16,7 +16,7 @@ import { addableRooms, homeRooms, isDirectChild, spaceEntries, spacesForRail } f
 import { NotificationEngine, makeNotifierPort } from "./modules/notify/engine.js";
 import { CallBanner } from "./modules/call/CallUi.js";
 import { ACCENTS, loadAppearance, mountAppearance, type Appearance } from "./modules/settings/appearance.js";
-import { useModalA11y } from "./modules/a11y.js";
+import { useClickAway, useModalA11y } from "./modules/a11y.js";
 
 export function App(): ReactNode {
   const sm = getSessionManager();
@@ -40,8 +40,14 @@ export function App(): ReactNode {
   // W8 a11y: modal focus management refs (palette + add-room dialog)
   const paletteRef = useRef<HTMLDivElement | null>(null);
   const addDialogRef = useRef<HTMLDivElement | null>(null);
+  // W12 item 2: click-away (pointerdown outside) dismissal
+  const acctZoneRef = useRef<HTMLDivElement | null>(null);
+  const ctxMenuRef = useRef<HTMLDivElement | null>(null);
   useModalA11y(paletteRef, () => setPaletteOpen(false), paletteOpen);
   useModalA11y(addDialogRef, () => setAddOpen(false), addOpen);
+  useClickAway(acctZoneRef, () => setMenuOpen(false), menuOpen);
+  useClickAway(ctxMenuRef, () => setRowMenu(null), rowMenu !== null);
+  useClickAway(paletteRef, () => setPaletteOpen(false), paletteOpen);
   useEffect(() => {
     applyAppearance.current = mountAppearance();
   }, []);
@@ -169,14 +175,15 @@ export function App(): ReactNode {
     <div className="shell">
       <a className="skip-link" href="#linnet-main">Skip to conversation</a>
       <nav className="rail" aria-label="Spaces">
-        <div className="brand">
-          <button className="acct" aria-label="Account menu" title={activeName} onClick={() => setMenuOpen((v) => !v)}>
-            {activeName.replace(/^@/, "").slice(0, 2).toUpperCase()}
-          </button>
-          <strong>Linnet</strong>
-        </div>
-        {menuOpen && (
-          <div className="account-menu" role="menu">
+        <div className="acct-zone" ref={acctZoneRef}>
+          <div className="brand">
+            <button className="acct" aria-label="Account menu" title={activeName} onClick={() => setMenuOpen((v) => !v)}>
+              {activeName.replace(/^@/, "").slice(0, 2).toUpperCase()}
+            </button>
+            <strong>Linnet</strong>
+          </div>
+          {menuOpen && (
+            <div className="account-menu" role="menu">
             {accounts.map((a) => (
               <div key={a.accountId} className="menu-row">
                 <button
@@ -225,8 +232,9 @@ export function App(): ReactNode {
                 />
               ))}
             </div>
-          </div>
-        )}
+            </div>
+          )}
+        </div>
         <SpaceRail
           spaces={spacesForRail(rooms)}
           active={activeSpaceId}
@@ -374,6 +382,7 @@ export function App(): ReactNode {
               role="menu"
               aria-label={`Actions for ${target.name}`}
               data-testid="room-ctx-menu"
+              ref={ctxMenuRef}
               style={{ left: rowMenu.x, top: rowMenu.y }}
               onClick={(e) => e.stopPropagation()}
             >

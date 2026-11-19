@@ -3,7 +3,7 @@
  * windows, config resolution and OS-backed storage (accounts kv + safeStorage
  * secrets). Notifications/tray land W6.
  */
-import { app, BrowserWindow, ipcMain, safeStorage } from "electron";
+import { app, BrowserWindow, ipcMain, safeStorage, session, shell } from "electron";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -101,6 +101,12 @@ function createWindow(): void {
       sandbox: true,
     },
   });
+  // W9: matrix.to / image / SSO-provider links always leave the app window
+  // for the OS browser — the renderer never gets navigated off Linnet.
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:/i.test(url)) void shell.openExternal(url);
+    return { action: "deny" };
+  });
   if (DEV_URL) {
     void win.loadURL(DEV_URL);
   } else {
@@ -123,7 +129,23 @@ if (!gotLock) {
   ipcMain.handle("linnet:secret:save", (_e, key: string, value: string) => secretSave(key, value));
   ipcMain.handle("linnet:secret:load", (_e, key: string) => secretLoad(key));
   ipcMain.handle("linnet:secret:remove", (_e, key: string) => secretRemove(key));
+  // W9: unread badge (Linux docks/Unity; no-op elsewhere) + external opens
+  ipcMain.handle("linnet:badge", (_e, count: number) => {
+    try {
+      app.setBadgeCount(Math.max(0, Math.floor(count)));
+    } catch {
+      /* Windows has no badge API — harmless */
+    }
+  });
+  ipcMain.on("linnet:open-external", (_e, url: string) => {
+    if (/^https?:/i.test(url)) void shell.openExternal(url);
+  });
   app.whenReady().then(() => {
+    // W9: renderer Notification API allowed (system notifications, PRD 6.8);
+    // everything else (camera/mic/clipboard…) stays default-deny.
+    session.defaultSession.setPermissionRequestHandler((_wc, permission, cb) => {
+      cb(permission === "notifications");
+    });
     createWindow();
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();

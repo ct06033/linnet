@@ -20,6 +20,9 @@ const bridge = {
     load: (key: string): Promise<string | null> => ipcRenderer.invoke("linnet:secret:load", key),
     remove: (key: string): Promise<void> => ipcRenderer.invoke("linnet:secret:remove", key),
   },
+  /** W9: dock/taskbar unread count + open a URL in the OS browser */
+  setBadge: (count: number): Promise<void> => ipcRenderer.invoke("linnet:badge", count),
+  openExternal: (url: string): void => ipcRenderer.send("linnet:open-external", url),
   /** reserved: extension host attach point (docs/prd.md §6.9) */
   modules: {
     async load(_moduleId: string): Promise<{ ok: false; reason: string }> {

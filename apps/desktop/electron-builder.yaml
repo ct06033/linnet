@@ -12,6 +12,8 @@ files:
   - dist-electron/**
   - package.json
 
+artifactName: \${productName}-\${version}-\${os}-\${arch}.\${ext}
+
 extraResources:
   - from: ../packages/app/dist
     to: renderer
@@ -30,7 +32,7 @@ nsis:
 linux:
   target:
     - deb
-    - rpm
     - AppImage
   category: Network
   maintainer: Linnet contributors
+  synopsis: Matrix chat client between Element and Cinny

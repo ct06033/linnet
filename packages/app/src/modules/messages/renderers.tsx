@@ -6,7 +6,8 @@
 import type { MatrixClient, MatrixEvent } from "matrix-js-sdk";
 import { useState, type ReactNode } from "react";
 import type { LinnetModule, TimelineItemContribution } from "@linnet/core";
-import { sanitizeHtml, mxcUrl } from "./html.js";
+import { sanitizeHtml } from "./html.js";
+import { ImageBody, VoiceBody, FileBody } from "../media/renderers.js";
 import { stripFallbackQuote } from "./markdown.js";
 import {
   aggregateReactions,
@@ -34,6 +35,7 @@ export interface TimelineItemProps {
   poll?: PollState;
   onVote?: (target: MatrixEvent, answerId: string) => void;
   onEndPoll?: (target: MatrixEvent) => void;
+  onOpenImage?: (evId: string) => void;
 }
 
 const QUICK_REACTIONS = ["👍", "❤️", "😂", "🎉", "😮", "😢", "🔥", "👀"];
@@ -119,32 +121,19 @@ function TextLike(kind: "text" | "notice" | "emote") {
 function MediaBody(props: unknown): ReactNode {
   const p = props as TimelineItemProps;
   const content = p.editContent ?? rawContentOf(p.ev);
-  const url = (content["url"] ?? (content["file"] as Record<string, unknown> | undefined)?.["url"]) as
-    | string
-    | undefined;
-  const body = String(content["body"] ?? "attachment");
   const msgtype = String(content["msgtype"] ?? kindOf(p.ev));
-  if (msgtype === "m.image" && url) {
-    return (
-      <div className="msg msg-image">
-        <img
-          className="thumb"
-          alt={body}
-          src={mxcUrl(url, p.client.getHomeserverUrl())}
-          data-testid={`img-${p.ev.getId()}`}
-        />
-        <ReactionRow {...p} />
-      </div>
-    );
-  }
+  const info = (content["info"] as Record<string, unknown>) ?? {};
+  const isVoice =
+    msgtype === "m.audio" &&
+    (content["org.matrix.msc3245.voice"] !== undefined || info["org.matrix.msc1767.audio"] !== undefined || info.json !== undefined);
+  const mp = { ev: p.ev, client: p.client, content, onOpenImage: p.onOpenImage };
+  const inner =
+    msgtype === "m.image" ? <ImageBody {...mp} /> : isVoice ? <VoiceBody {...mp} /> : <FileBody {...mp} />;
   return (
-    <div className="msg msg-file" data-testid={`file-${p.ev.getId()}`}>
-      <span className={`file-kind ${msgtype.replace(/[.]/g, "-")}`}>
-        {msgtype === "m.audio" ? "🔊" : msgtype === "m.video" ? "🎬" : "📎"}
-      </span>
-      <span className="file-name">{body}</span>
+    <>
+      {inner}
       <ReactionRow {...p} />
-    </div>
+    </>
   );
 }
 

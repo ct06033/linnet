@@ -225,6 +225,8 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
   const stateStores = new Map<string, Map<string, Record<string, unknown>>>();
   const history = new Map<string, FakeEventLike[]>();
   let eventSeq = 1;
+  // W4c: media bytes are STORED so download routes can serve them back
+  const mediaStore = new Map<string, Uint8Array>();
   let ts = Date.now();
   let sendFailure: { status: number; errcode: string } | null = null;
 
@@ -529,10 +531,33 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
       });
     }
 
-    // media upload — v3 /media/upload or /media/v3/upload
-    if (/\/media(\/v3)?\/upload$/.test(path) && method === "POST") {
-      record("POST", path, { size: typeof init?.body === "string" ? init.body.length : 0 });
-      return jsonRes({ content_uri: `mxc://linnet.test/up${eventSeq++}` });
+    // media upload — v3 /media/upload or /media/v3/upload (bytes stored,
+    // ids served back through the download routes below)
+    if (/\/media(\/v3)?\/upload$/.test(path) && (method === "POST" || method === "PUT")) {
+      let bytes: Uint8Array;
+      const b = init?.body;
+      if (b == null) bytes = new Uint8Array();
+      else if (typeof b === "string") bytes = new TextEncoder().encode(b);
+      else if (b instanceof Uint8Array) bytes = b;
+      else if (b instanceof ArrayBuffer) bytes = new Uint8Array(b);
+      else if (typeof (b as Blob).arrayBuffer === "function")
+        bytes = new Uint8Array(await (b as Blob).arrayBuffer());
+      else bytes = new Uint8Array();
+      const id = `up${eventSeq++}`;
+      mediaStore.set(id, bytes);
+      record(method, path, { size: bytes.length });
+      return jsonRes({ content_uri: `mxc://linnet.test/${id}` });
+    }
+
+    // media download/thumbnail — authenticated (client/v1) + legacy routes.
+    // Unknown id -> M_NOT_FOUND so app error states are testable.
+    const mediaGet = path.match(/media\/(download|thumbnail)\/([^/]+)\/([^/?]+)/);
+    if (mediaGet && method === "GET") {
+      const bytes = mediaStore.get(mediaGet[3]!);
+      if (!bytes) return jsonRes({ errcode: "M_NOT_FOUND", error: "media not found" }, 404);
+      return new Response(bytes.slice() as unknown as BodyInit, {
+        headers: { "Content-Type": "application/octet-stream" },
+      });
     }
 
     // GET /rooms/{roomId}/event/{eventId} — single event fetch (thread sends

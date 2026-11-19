@@ -4,6 +4,8 @@
  * the Ctrl+K palette proves the plumbing.
  */
 import { ModuleRegistry, type LinnetModule } from "@linnet/core";
+import { messagesModule } from "./modules/messages/renderers.js";
+import { coreCommandsModule } from "./modules/commands.js";
 
 const echoModule: LinnetModule = {
   id: "linnet.echo",
@@ -27,6 +29,8 @@ const echoModule: LinnetModule = {
 export async function bootRegistry(): Promise<ModuleRegistry> {
   const registry = new ModuleRegistry({ flags: {}, config: {} });
   await registry.register(echoModule);
+  await registry.register(messagesModule);
+  await registry.register(coreCommandsModule);
   // lazy: await registry.registerLazy("linnet.calls", () => import("./modules/calls.js"))
   return registry;
 }

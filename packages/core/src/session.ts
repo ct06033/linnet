@@ -1,4 +1,4 @@
-import { ClientEvent, NotificationCountType, SyncState, type MatrixClient } from "matrix-js-sdk";
+import { ClientEvent, NotificationCountType, PendingEventOrdering, SyncState, type MatrixClient } from "matrix-js-sdk";
 import { createClientSession } from "./sdk.js";
 import {
   AccountStore,
@@ -152,7 +152,9 @@ export class SessionManager {
     }
     if (!s.started) {
       s.started = true;
-      s.client.startClient({ initialSyncLimit: 20 });
+      // detached pending ordering → Room.getPendingEvents() works for the
+      // RoomView optimistic echo (chronological throws there — probed 45.1)
+      s.client.startClient({ initialSyncLimit: 20, pendingEventOrdering: PendingEventOrdering.Detached });
     }
   }
 

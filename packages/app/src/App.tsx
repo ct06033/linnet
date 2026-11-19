@@ -9,6 +9,7 @@ import { bootRegistry } from "./modules.js";
 import { readConfig } from "./bridge.js";
 import { getSessionManager } from "./session-context.js";
 import { Login } from "./screens/Login.js";
+import { RoomView } from "./modules/messages/RoomView.js";
 
 const SPACES = ["Home", "Family", "Work", "Hobby"];
 
@@ -24,6 +25,7 @@ export function App(): ReactNode {
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
   const [menuOpen, setMenuOpen] = useState(false);
   const [defaultHs, setDefaultHs] = useState<string | undefined>();
+  const [selectedRoom, setSelectedRoom] = useState<string | null>(null);
 
   useEffect(() => {
     void readConfig().then((c) => setDefaultHs(c.defaultHomeServer));
@@ -69,8 +71,18 @@ export function App(): ReactNode {
     await sm.setActive(id);
     setActiveId(id);
     setRooms([]);
+    setSelectedRoom(null);
     setMenuOpen(false);
   }
+
+  const clientForView = useMemo(() => {
+    try {
+      return sm.activeClient();
+    } catch {
+      return null;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sm, activeId, phase]);
 
   async function signOut(id: string): Promise<void> {
     await sm.logout(id);
@@ -144,31 +156,35 @@ export function App(): ReactNode {
         <h3>People</h3>
         {dmRooms.length === 0 && <p className="empty">no DMs</p>}
         {dmRooms.map((r) => (
-          <Row key={r.roomId} r={r} />
+          <Row key={r.roomId} r={r} selected={selectedRoom === r.roomId} onSelect={setSelectedRoom} />
         ))}
         <h3>Rooms — {space}</h3>
         {invites.map((r) => (
-          <Row key={r.roomId} r={r} />
+          <Row key={r.roomId} r={r} selected={selectedRoom === r.roomId} onSelect={setSelectedRoom} />
         ))}
         {plainRooms.map((r) => (
-          <Row key={r.roomId} r={r} />
+          <Row key={r.roomId} r={r} selected={selectedRoom === r.roomId} onSelect={setSelectedRoom} />
         ))}
         {rooms.length === 0 && <p className="empty">syncing…</p>}
       </aside>
 
       <main className="timeline">
-        <header>
-          <span>{plainRooms[0]?.name ?? "linnet"}</span>
-          <button onClick={() => setPaletteOpen(true)}>Ctrl+K</button>
-        </header>
-        <p className="placeholder">
-          {rooms.length > 0
-            ? "rooms live · timeline arrives wave 4 (threads + polls next)"
-            : "waiting for first sync…"}
-        </p>
-        <footer className="composer">
-          composer arrives wave 4 · registry: {registry ? "up" : "booting…"}
-        </footer>
+        {selectedRoom && clientForView ? (
+          <RoomView client={clientForView} roomId={selectedRoom} registry={registry} />
+        ) : (
+          <>
+            <header>
+              <span>{plainRooms[0]?.name ?? "linnet"}</span>
+              <button onClick={() => setPaletteOpen(true)}>Ctrl+K</button>
+            </header>
+            <p className="placeholder">
+              {rooms.length > 0
+                ? "pick a room — timeline is live"
+                : "waiting for first sync…"}
+            </p>
+            <footer className="composer">composer arrives wave 4 · registry: {registry ? "up" : "booting…"}</footer>
+          </>
+        )}
       </main>
 
       {paletteOpen && (
@@ -193,9 +209,9 @@ export function App(): ReactNode {
   );
 }
 
-function Row({ r }: { r: RoomSummary }): ReactNode {
+function Row({ r, selected, onSelect }: { r: RoomSummary; selected: boolean; onSelect: (id: string) => void }): ReactNode {
   return (
-    <button className="row">
+    <button className={`row${selected ? " selected" : ""}`} onClick={() => onSelect(r.roomId)}>
       <span className="name">{r.name}</span>
       {r.invite && <span className="invite">invite</span>}
       {r.unread > 0 && <span className="pill">{r.unread}</span>}

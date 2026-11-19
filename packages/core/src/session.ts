@@ -122,14 +122,75 @@ export class SessionManager {
     const res = await client.login("m.login.password", {
       identifier: { type: "m.id.user", user: creds.username },
       password: creds.password,
+      initial_device_display_name: "Linnet",
     });
+    return this.finishLogin(creds.homeserverUrl, res);
+  }
+
+  /**
+   * W8 SSO: GET /v3/login flow discovery. Returns which flows this homeserver
+   * offers plus any advertised identity providers (name/brand/icon).
+   */
+  async discoverLogin(homeserverUrl: string): Promise<LoginFlows> {
+    const fetchFn = this.fetchFn ?? globalThis.fetch;
+    const res = await fetchFn(`${trimTrailingSlash(homeserverUrl)}/_matrix/client/v3/login`);
+    if (!res.ok) throw new Error(`login discovery failed: HTTP ${res.status}`);
+    const body = (await res.json()) as {
+      flows?: { type: string; identity_providers?: IdentityProviderInfo[] }[];
+    };
+    const flows = body.flows ?? [];
+    const sso = flows.find((f) => f.type === "m.login.sso" || f.type === "MSC3824_LOGIN_QR");
+    return {
+      password: flows.some((f) => f.type === "m.login.password"),
+      sso: flows.some((f) => f.type === "m.login.sso"),
+      identityProviders: sso?.identity_providers ?? [],
+    };
+  }
+
+  /**
+   * W8 SSO (legacy UIAA redirect, PRD 6.1): ask the HS where the IdP bounce
+   * starts. GET /login/sso/redirect[/:idp] — Synapse answers 302; we surface
+   * the Location so the app can window.location.assign() it (web) or hand it
+   * to the OS browser (Electron, W9). redirectUri must come back to us with
+   * ?loginToken= appended (spec behavior of every real SSO relay).
+   */
+  async getSsoLoginUrl(homeserverUrl: string, redirectUri: string, idpId?: string): Promise<string> {
+    const fetchFn = this.fetchFn ?? globalThis.fetch;
+    const seg = idpId ? `/${encodeURIComponent(idpId)}` : "";
+    const url = `${trimTrailingSlash(homeserverUrl)}/_matrix/client/v3/login/sso/redirect${seg}?redirectUrl=${encodeURIComponent(redirectUri)}`;
+    const res = await fetchFn(url, { redirect: "manual" });
+    if (res.status >= 300 && res.status < 400) {
+      const loc = res.headers.get("location");
+      if (loc) return new URL(loc, url).toString();
+    }
+    if (res.status === 200) {
+      // some relays serve the IdP page directly; treat the URL itself as the target
+      return url;
+    }
+    throw new Error(`SSO redirect unavailable: HTTP ${res.status}`);
+  }
+
+  /** W8 SSO: consume the ?loginToken= the IdP relay bounced back. */
+  async loginWithSsoToken(homeserverUrl: string, loginToken: string): Promise<AccountMetadata> {
+    const client = createClientSession({ homeserverUrl, fetchFn: this.fetchFn });
+    const res = await client.login("m.login.token", {
+      token: loginToken,
+      initial_device_display_name: "Linnet",
+    });
+    return this.finishLogin(homeserverUrl, res);
+  }
+
+  private async finishLogin(
+    homeserverUrl: string,
+    res: { access_token?: string; user_id?: string; device_id?: string },
+  ): Promise<AccountMetadata> {
     if (!res.access_token || !res.user_id || !res.device_id) {
       throw new Error("homeserver returned incomplete login response");
     }
     const accountId = `${res.user_id}|${res.device_id}`;
     const meta = await this.store.add({
       accountId,
-      homeserverUrl: creds.homeserverUrl,
+      homeserverUrl,
       userId: res.user_id,
       deviceId: res.device_id,
       createdAt: new Date().toISOString(),
@@ -139,7 +200,7 @@ export class SessionManager {
     // swap for a fully-credentialed one before touching crypto (Megolm + RTC poller
     // both hard-require deviceId — js-sdk 45).
     const sessionClient = createClientSession({
-      homeserverUrl: creds.homeserverUrl,
+      homeserverUrl,
       accessToken: res.access_token,
       deviceId: res.device_id,
       userId: res.user_id,
@@ -258,4 +319,21 @@ function summarize(client: MatrixClient): RoomSummary[] {
     });
   }
   return out;
+}
+
+export interface IdentityProviderInfo {
+  id: string;
+  name: string;
+  brand?: string;
+  icon?: string;
+}
+
+export interface LoginFlows {
+  password: boolean;
+  sso: boolean;
+  identityProviders: IdentityProviderInfo[];
+}
+
+function trimTrailingSlash(url: string): string {
+  return url.replace(/\/+$/, "");
 }

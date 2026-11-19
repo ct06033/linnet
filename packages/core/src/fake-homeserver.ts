@@ -68,6 +68,8 @@ export interface FakeHomeserverOptions {
   sync?: (userId: string) => unknown;
   /** Per-user room feed for /messages back-pagination (the `old` arrays). */
   roomsLookup?(userId: string): Array<{ roomId: string; old?: FakeEventLike[] }>;
+  /** W8: advertise m.login.sso with these IdPs; enables /login/sso/redirect. */
+  sso?: { id: string; name: string; brand?: string }[];
 }
 
 export interface FakeHomeserverControls {
@@ -93,6 +95,17 @@ function jsonRes(body: unknown, status = 200): Response {
     headers: { get: (_name: string) => "application/json" },
     json: async () => body,
     text: async () => JSON.stringify(body),
+  } as unknown as Response;
+}
+
+function redirectRes(location: string): Response {
+  return {
+    ok: false,
+    status: 302,
+    statusText: "Found",
+    headers: { get: (n: string) => (n.toLowerCase() === "location" ? location : null) },
+    json: async () => ({}),
+    text: async () => "",
   } as unknown as Response;
 }
 
@@ -255,6 +268,8 @@ interface QueueItem {
 export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithControls {
   const byToken = new Map(opts.accounts.map((a) => [a.accessToken, a]));
   const loggedOut = new Set<string>();
+  // W8 SSO: loginToken -> userId minted by the fake /login/sso/redirect bounce
+  const ssoTokens = new Map<string, string>();
   const calls: FakeCallRecord[] = [];
   const queues = new Map<string, QueueItem[]>();
   const waiters = new Map<string, Array<() => void>>();
@@ -340,8 +355,43 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
     if (path.endsWith("/versions")) return jsonRes({ versions: ["v1.1", "v1.2", "v1.3", "v1.4", "v1.5", "v1.6", "v1.7", "v1.8", "v1.9", "v1.10", "v1.11"] });
     if (path.endsWith("/capabilities")) return jsonRes({ capabilities: {} });
 
+    // W8 SSO: flow discovery (GET /login) + redirect bounce.
+    // The fake "IdP" authenticates whoever the request names via fake_as=
+    // (a test-only affordance; production code just window.location.assign's
+    // whatever URL getSsoLoginUrl returns).
+    if (path.endsWith("/login") && method === "GET") {
+      if (!opts.sso) return jsonRes({ flows: [{ type: "m.login.password" }] });
+      return jsonRes({
+        flows: [
+          { type: "m.login.password" },
+          { type: "m.login.sso", identity_providers: opts.sso },
+        ],
+      });
+    }
+    if (path.includes("/login/sso/redirect") && method === "GET") {
+      if (!opts.sso) return jsonRes({ errcode: "M_UNRECOGNIZED" }, 404);
+      const redirectUrl = url.searchParams.get("redirectUrl") ?? "";
+      const as = url.searchParams.get("fake_as") ?? opts.accounts[0]?.userId ?? "";
+      const ssoToken = `ssotok-${ssoTokens.size + 1}`;
+      ssoTokens.set(ssoToken, as);
+      const sep = redirectUrl.includes("?") ? "&" : "?";
+      return redirectRes(`${redirectUrl}${sep}loginToken=${ssoToken}`);
+    }
+
     if (path.endsWith("/login") && method === "POST") {
       const body = await bodyJson(init);
+      if (body.type === "m.login.token") {
+        const ssoUser = ssoTokens.get(String(body.token ?? ""));
+        if (!ssoUser) return jsonRes({ errcode: "M_FORBIDDEN", error: "invalid token" }, 403);
+        ssoTokens.delete(String(body.token)); // one-time per spec
+        const tokAccount = opts.accounts.find((a) => a.userId === ssoUser);
+        if (!tokAccount) return jsonRes({ errcode: "M_FORBIDDEN", error: "unknown sso subject" }, 403);
+        return jsonRes({
+          access_token: tokAccount.accessToken,
+          device_id: tokAccount.deviceId ?? "FAKEDEV",
+          user_id: tokAccount.userId,
+        });
+      }
       const identifier = body.identifier as { user?: string } | undefined;
       const loginUser = identifier?.user ?? (body.user as string | undefined);
       const hit = opts.accounts.find(

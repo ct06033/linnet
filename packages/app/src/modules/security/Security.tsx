@@ -41,6 +41,8 @@ export interface SecurityAdapter {
   sessions(client: MatrixClient): Promise<SessionRow[]>;
   beginDeviceVerification(client: MatrixClient, targetDeviceId: string): Promise<VerifyHandle>;
   revoke(client: MatrixClient, deviceId: string, password: string): Promise<void>;
+  /** W8: POST /logout/all — kill every other session, keep this one. No UIAA. */
+  logoutAll(client: MatrixClient): Promise<void>;
   onIncomingRequest(client: MatrixClient, cb: (h: VerifyHandle, request: unknown) => void): () => void;
 }
 

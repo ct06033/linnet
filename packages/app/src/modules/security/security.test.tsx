@@ -124,6 +124,9 @@ function mockAdapter(over: Partial<SecurityAdapter> = {}): SecurityAdapter & { c
     async revoke(_c, id) {
       calls.push(`revoke:${id}`);
     },
+    async logoutAll() {
+      calls.push("logoutAll");
+    },
     onIncomingRequest(_c, cb) {
       incomingCb = cb;
       return () => {
@@ -269,6 +272,14 @@ describe("W5a SecuritySheet", () => {
     fireEvent.change(screen.getByTestId("revoke-pw-OLD"), { target: { value: "s3cret" } });
     fireEvent.click(screen.getByTestId("revoke-go-OLD"));
     await waitFor(() => expect(adapter.calls).toContain("revoke:OLD"));
+  });
+
+  it("W4 sign out all other sessions hits logoutAll (no password prompt)", async () => {
+    const adapter = mockAdapter();
+    render(<SecuritySheet client={anyClient} adapter={adapter} onClose={() => undefined} />);
+    fireEvent.click(await screen.findByTestId("start-sessions"));
+    fireEvent.click(await screen.findByTestId("logout-all"));
+    await waitFor(() => expect(adapter.calls).toContain("logoutAll"));
   });
 
   it("incoming verification takes over the panel from any flow", async () => {

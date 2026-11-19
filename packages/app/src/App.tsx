@@ -15,6 +15,8 @@ import { addableRooms, homeRooms, spaceEntries, spacesForRail } from "./modules/
 import { addRoomToSpace, createSpace, leaveAndMaybeForget, removeRoomFromSpace } from "./modules/spaces/actions.js";
 import { NotificationEngine, makeNotifierPort } from "./modules/notify/engine.js";
 import { CallBanner } from "./modules/call/CallUi.js";
+import { ACCENTS, loadAppearance, mountAppearance, type Appearance } from "./modules/settings/appearance.js";
+import { useModalA11y } from "./modules/a11y.js";
 
 export function App(): ReactNode {
   const sm = getSessionManager();
@@ -30,6 +32,21 @@ export function App(): ReactNode {
   const [menuOpen, setMenuOpen] = useState(false);
   const [defaultHs, setDefaultHs] = useState<string | undefined>();
   const [selectedRoom, setSelectedRoom] = useState<string | null>(null);
+  // W8 theming: applied to <html> at boot; live switchable from the account menu
+  const [appearance, setAppearance] = useState<Appearance>(() => loadAppearance());
+  const applyAppearance = useRef<((a: Appearance) => void) | null>(null);
+  // W8 a11y: modal focus management refs (palette + add-room dialog)
+  const paletteRef = useRef<HTMLDivElement | null>(null);
+  const addDialogRef = useRef<HTMLDivElement | null>(null);
+  useModalA11y(paletteRef, () => setPaletteOpen(false), paletteOpen);
+  useModalA11y(addDialogRef, () => setAddOpen(false), addOpen);
+  useEffect(() => {
+    applyAppearance.current = mountAppearance();
+  }, []);
+  function switchAppearance(next: Appearance): void {
+    setAppearance(next);
+    applyAppearance.current?.(next);
+  }
 
   useEffect(() => {
     void readConfig().then((c) => setDefaultHs(c.defaultHomeServer));
@@ -135,9 +152,10 @@ export function App(): ReactNode {
 
   return (
     <div className="shell">
+      <a className="skip-link" href="#linnet-main">Skip to conversation</a>
       <nav className="rail" aria-label="Spaces">
         <div className="brand">
-          <button className="acct" title={activeName} onClick={() => setMenuOpen((v) => !v)}>
+          <button className="acct" aria-label="Account menu" title={activeName} onClick={() => setMenuOpen((v) => !v)}>
             {activeName.replace(/^@/, "").slice(0, 2).toUpperCase()}
           </button>
           <strong>Linnet</strong>
@@ -159,6 +177,7 @@ export function App(): ReactNode {
               </div>
             ))}
             <button
+              role="menuitem"
               onClick={() => {
                 setMenuOpen(false);
                 setPhase("login");
@@ -166,6 +185,31 @@ export function App(): ReactNode {
             >
               + Add another account
             </button>
+            <div className="appearance-row" role="group" aria-label="Theme">
+              <span className="lbl">Theme</span>
+              {(["system", "light", "dark"] as const).map((m) => (
+                <button
+                  key={m}
+                  aria-pressed={appearance.mode === m}
+                  onClick={() => switchAppearance({ ...appearance, mode: m })}
+                >
+                  {m}
+                </button>
+              ))}
+            </div>
+            <div className="appearance-row" role="group" aria-label="Accent color">
+              <span className="lbl">Accent</span>
+              {ACCENTS.map((a) => (
+                <button
+                  key={a.id}
+                  className="swatch"
+                  style={{ background: a.css }}
+                  aria-label={a.label}
+                  aria-pressed={appearance.accent === a.id}
+                  onClick={() => switchAppearance({ ...appearance, accent: a.id })}
+                />
+              ))}
+            </div>
           </div>
         )}
         <SpaceRail
@@ -226,7 +270,7 @@ export function App(): ReactNode {
               </button>
             </div>
             {addOpen && (
-              <div className="dialog" role="dialog" aria-label="Add existing room">
+              <div className="dialog" role="dialog" aria-modal="true" aria-label="Add existing room" ref={addDialogRef}>
                 {addable.length === 0 && <p className="empty">no rooms to add</p>}
                 {addable.map((r) => (
                   <button
@@ -277,7 +321,7 @@ export function App(): ReactNode {
         )}
       </aside>
 
-      <main className="timeline">
+      <main className="timeline" id="linnet-main">
         {selectedRoom && clientForView ? (
           <RoomView client={clientForView} roomId={selectedRoom} registry={registry} />
         ) : (
@@ -298,7 +342,7 @@ export function App(): ReactNode {
 
       <CallBanner client={clientForView} />
       {paletteOpen && (
-        <div className="palette" role="dialog" aria-label="Command palette">
+        <div className="palette" role="dialog" aria-modal="true" aria-label="Command palette" ref={paletteRef}>
           <input
             autoFocus
             placeholder="Type a command…"
@@ -335,7 +379,11 @@ function Row({
   onDecline?: () => void;
 }): ReactNode {
   return (
-    <button className={`row${selected ? " selected" : ""}`} onClick={() => onSelect(r.roomId)}>
+    <button
+      className={`row${selected ? " selected" : ""}`}
+      aria-current={selected ? "true" : undefined}
+      onClick={() => onSelect(r.roomId)}
+    >
       <span className="name">{r.name}</span>
       {r.invite && <span className="invite">invite</span>}
       {r.unread > 0 && <span className="pill">{r.unread}</span>}

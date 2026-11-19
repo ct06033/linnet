@@ -113,3 +113,43 @@ describe("SessionManager", () => {
     sm2.stopAll();
   });
 });
+
+// W8 — legacy SSO (UIAA redirect): discover → bounce → one-time loginToken.
+describe("SessionManager SSO (W8)", () => {
+  const ssoFetch = createFakeHomeserver({
+    accounts: [ALICE, BOB],
+    sso: [{ id: "okta", name: "Okta", brand: "okta" }],
+    sync: (userId) => makeSyncSnapshot({ userId, rooms: [{ roomId: "!r1:hs.test", name: "sso-room" }] }),
+  });
+  const mk = () => new SessionManager({ kv: new MemoryKv(), secrets: new MemorySecrets(), fetchFn: ssoFetch });
+
+  it("S1 discovers password+sso flows with identity providers", async () => {
+    const f = await mk().discoverLogin("https://hs.test");
+    expect(f.password).toBe(true);
+    expect(f.sso).toBe(true);
+    expect(f.identityProviders).toEqual([{ id: "okta", name: "Okta", brand: "okta" }]);
+  });
+
+  it("S2 getSsoLoginUrl follows the 302 and returns the IdP target with loginToken", async () => {
+    const url = await mk().getSsoLoginUrl("https://hs.test", "https://app.test/");
+    expect(url.startsWith("https://app.test/")).toBe(true);
+    expect(new URL(url).searchParams.get("loginToken")).toMatch(/^ssotok-/);
+  });
+
+  it("S3 loginWithSsoToken lands a live session; token is one-time", async () => {
+    const sm = mk();
+    const bounced = await sm.getSsoLoginUrl("https://hs.test", "https://app.test/");
+    const loginToken = new URL(bounced).searchParams.get("loginToken")!;
+    const meta = await sm.loginWithSsoToken("https://hs.test", loginToken);
+    expect(meta.accountId).toBe(aliceId); // fake IdP authenticates accounts[0]
+    expect(sm.activeId).toBe(aliceId);
+    await expect(sm.loginWithSsoToken("https://hs.test", loginToken)).rejects.toThrow(/invalid token|403/);
+    sm.stopAll();
+  });
+
+  it("S4 discovery on a no-SSO homeserver hides SSO (password only)", async () => {
+    const f = await mkManager().discoverLogin("https://hs.test");
+    expect(f.sso).toBe(false);
+    expect(f.identityProviders).toEqual([]);
+  });
+});

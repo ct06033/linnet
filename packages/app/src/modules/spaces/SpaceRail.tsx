@@ -3,7 +3,8 @@
  * first stop; spaces are name-sorted; DMs never appear (tree.ts owns the
  * filtering rules — this component only renders what it's handed).
  */
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
+import { useModalA11y } from "../a11y.js";
 import type { RoomSummary } from "@linnet/core";
 
 export interface SpaceRailProps {
@@ -17,6 +18,9 @@ export interface SpaceRailProps {
 
 export function SpaceRail({ spaces, active, onSelect, onCreate }: SpaceRailProps): ReactNode {
   const [creating, setCreating] = useState(false);
+  // W8 a11y: focus trap + Escape + restore for the create-space dialog
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  useModalA11y(dialogRef, () => setCreating(false), creating);
   const [name, setName] = useState("");
   const [isPublic, setIsPublic] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -63,7 +67,7 @@ export function SpaceRail({ spaces, active, onSelect, onCreate }: SpaceRailProps
         +
       </button>
       {creating && (
-        <div className="dialog" role="dialog" aria-label="Create a new space">
+        <div className="dialog" role="dialog" aria-modal="true" aria-label="Create a new space" ref={dialogRef}>
           <strong>New space</strong>
           {error && <p role="alert">{error}</p>}
           <label>

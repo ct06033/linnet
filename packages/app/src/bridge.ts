@@ -21,6 +21,8 @@ declare global {
       version: string;
       kv?: KvBridge;
       secrets?: SecretBridge;
+      setBadge?(count: number): Promise<void>;
+      openExternal?(url: string): void;
     };
   }
 }

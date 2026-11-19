@@ -59,7 +59,11 @@ export function App(): ReactNode {
       setPhase(acc.length > 0 ? "ready" : "login");
     })().catch((err) => console.error("linnet boot failed", err));
     return sm.onRooms((accountId, rs) => {
-      if (accountId === sm.activeId) setRooms(rs);
+      if (accountId !== sm.activeId) return;
+      setRooms(rs);
+      // W9: dock/taskbar unread count (no-op off Electron)
+      const total = rs.reduce((n, r) => n + (r.membership === "join" ? r.unread : 0), 0);
+      void window.linnet?.setBadge?.(total);
     });
   }, [sm]);
 

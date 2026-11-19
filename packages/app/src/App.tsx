@@ -266,7 +266,7 @@ export function App(): ReactNode {
       <aside className="roomlist" aria-label="Rooms">
         {activeSpaceId === null ? (
           <>
-            <h3>People</h3>
+            <h3 className="section-heading">People</h3>
             {dmRooms.length === 0 && <p className="empty">no DMs</p>}
             {dmRooms.map((r) => (
               <Row
@@ -277,7 +277,7 @@ export function App(): ReactNode {
                 onOpenMenu={openRowMenu}
               />
             ))}
-            <h3>Rooms</h3>
+            <h3 className="section-heading">Rooms</h3>
             {invites.map((r) => (
               <Row
                 key={r.roomId}

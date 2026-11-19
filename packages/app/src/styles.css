@@ -74,6 +74,14 @@ body { font: 14px/1.45 system-ui, "Inter", sans-serif; background: var(--bg); co
 .room-ctx-menu button.danger { color: var(--danger); }
 .roomlist { border-right: 1px solid var(--line); padding: 10px; overflow-y: auto; }
 .roomlist h3 { font-size: 11px; text-transform: uppercase; color: var(--fg-dim); margin: 12px 6px 6px; }
+/* W12 item 5: section headings must stand apart from room names in BOTH themes —
+   heavier, larger, wider tracking and an accent-tinged, higher-contrast color. */
+.roomlist h3.section-heading {
+  font-size: 13px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase;
+  color: color-mix(in srgb, var(--accent) 45%, var(--fg));
+  text-shadow: none; border-bottom: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  padding-bottom: 3px;
+}
 .roomlist .empty { color: var(--fg-dim); font-size: 12px; margin: 4px 6px; }
 .row { display: flex; width: 100%; align-items: center; gap: 8px; background: transparent; border: 0; color: var(--fg); padding: 7px 9px; border-radius: 7px; cursor: pointer; }
 .row:hover { background: var(--bg-alt); }

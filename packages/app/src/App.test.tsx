@@ -62,6 +62,12 @@ describe("wave-2 auth shell", () => {
     expect(screen.getAllByText("People").length).toBeGreaterThan(0);
     expect(screen.getByText("invite")).toBeTruthy(); // design-help
     expect(screen.getByText("Mel")).toBeTruthy(); // DM section
+    // W12 item 5: both section headings carry the stand-out class (styled in
+    // CSS for both themes: heavier, uppercase, accent-tinged)
+    const people = screen.getByText("People", { selector: "h3" });
+    const rooms = screen.getByText("Rooms", { selector: "h3" });
+    expect(people.className).toContain("section-heading");
+    expect(rooms.className).toContain("section-heading");
   });
 
   it("Ctrl+K palette lists module-registry commands after login", async () => {

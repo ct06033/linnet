@@ -193,6 +193,20 @@ export const prodAdapter: SecurityAdapter = {
     await (client as unknown as { refreshDevices?(): Promise<void> }).refreshDevices?.();
   },
 
+  async logoutAll(client) {
+    // W8: /logout/all takes no UIAA (unlike delete_devices) — one POST, every
+    // other session of this device dies. Token via public getter when present.
+    const tok = (client as unknown as { getAccessToken?(): string | null }).getAccessToken?.()
+      ?? (client as unknown as { accessToken?: string }).accessToken;
+    if (!tok) throw new Error("logout all: no access token");
+    const res = await fetch(`${client.getHomeserverUrl()}/_matrix/client/v3/logout/all`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${tok}` },
+    });
+    if (!res.ok) throw new Error(`logout all failed: HTTP ${res.status}`);
+    await (client as unknown as { refreshDevices?(): Promise<void> }).refreshDevices?.();
+  },
+
   onIncomingRequest(client, cb) {
     // NOT a root export in matrix-js-sdk 45 (root barrel omits CryptoEvent —
     // found by runtime TypeError, not by tsc); spec string is stable.

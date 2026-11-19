@@ -120,10 +120,30 @@ export function SessionsSection(props: {
     }
   }
 
+  // W8: bulk sign-out of every other session (canonical /logout/all)
+  const [othersBusy, setOthersBusy] = useState(false);
+  async function signOutOthers(): Promise<void> {
+    setOthersBusy(true);
+    try {
+      setErr(null);
+      await adapter.logoutAll(client);
+      load();
+    } catch (e) {
+      setErr(String((e as Error).message));
+    } finally {
+      setOthersBusy(false);
+    }
+  }
+
   if (rows == null && !err) return <p className="note" data-testid="sessions-loading">Loading sessions…</p>;
   return (
     <div className="sessions" data-testid="sessions">
       {err && <p className="err" data-testid="sessions-error">{err}</p>}
+      <p className="sessions-bulk">
+        <button className="danger" data-testid="logout-all" disabled={othersBusy} onClick={() => void signOutOthers()}>
+          {othersBusy ? "Signing out…" : "Sign out all other sessions"}
+        </button>
+      </p>
       <ul className="session-list">
         {(rows ?? []).map((r) => (
           <li key={r.deviceId} data-testid={`session-${r.deviceId}`}>

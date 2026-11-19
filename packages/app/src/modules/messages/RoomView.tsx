@@ -37,6 +37,7 @@ import { Viewer } from "../media/renderers.js";
 import { SecurityBanner, SecuritySheet } from "../security/Security.js";
 import { prodAdapter } from "../security/prod.js";
 import { RoomSettings } from "../settings/RoomSettings.js";
+import { getMonitor } from "../call/call.js";
 import type { SecurityStatus } from "../security/state.js";
 import type { TimelineItemProps } from "./renderers.js";
 
@@ -59,6 +60,7 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
   const [secOpen, setSecOpen] = useState(false);
   const [secStatus, setSecStatus] = useState<SecurityStatus | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [callErr, setCallErr] = useState<string | null>(null);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const pinnedBottom = useRef(true);
 
@@ -306,6 +308,22 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
           <button className="settings-gear" aria-label="Room settings" onClick={() => setSettingsOpen(true)}>
             ⚙
           </button>
+          <button
+            className="call-btn"
+            aria-label="Start voice call"
+            onClick={() =>
+              void getMonitor(client)
+                .place(roomId)
+                .catch((err: unknown) => setCallErr(String((err as Error)?.message ?? err)))
+            }
+          >
+            📞
+          </button>
+          {callErr && (
+            <span role="alert" className="call-err">
+              {callErr}
+            </span>
+          )}
         </div>
         <div className="sub">
           {topic && <span className="topic">{topic}</span>}

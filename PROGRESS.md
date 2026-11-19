@@ -8,8 +8,8 @@ Branch task/scaffold. Scaffold only, no protocol features.
 - [ ] 3. packages/core (matrix-js-sdk newest stable pinned; registry.ts per PRD 6.9 with 6 typed slots, register/enable/disable, flag-gated lazy import + vitest tests; sdk.ts createClientSession MatrixHttpApi+crypto stub + worker TODO; config.ts loader + well-known helper + tests)
 - [ ] 4. packages/app Vite+React18 renderer (3-pane mock shell: spaces rail | room list DMs/Rooms+unread pills | timeline placeholder; CSS vars light/dark prefers-color-scheme; account switcher stub; Ctrl+K palette listing registry contributions; vitest smoke)
 - [ ] 5. scripts/perf-harness README + bench.mjs printing harness: no baseline yet
-- [ ] 6. .github/workflows/ci.yml (install, typecheck, test, build; renderer build real; electron download skipped)
-- [ ] 7. README.md dev quickstart
+- [x] 6. .github/workflows/ci.yml (install, typecheck, test, build; renderer build real; electron download skipped)
+- [x] 7. README.md dev quickstart
 - [ ] 8. SMOKE: pnpm install; pnpm -r typecheck && pnpm -r test && pnpm --filter app build GREEN (failures recorded honestly)
 
 ## Log / deviations

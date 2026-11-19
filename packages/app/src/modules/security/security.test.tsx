@@ -4,6 +4,7 @@
  * help link) against the fake homeserver.
  */
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { MatrixClient } from "matrix-js-sdk";
 import {
@@ -300,6 +301,31 @@ describe("W5a SecuritySheet", () => {
     await screen.findByTestId("session-CUR");
     expect(screen.queryByTestId("revoke-CUR")).toBeNull();
     expect(screen.queryByTestId("verify-CUR")).toBeNull();
+  });
+
+  it("item 9: security/recover dialog is centered + high-contrast in both themes", async () => {
+    const adapter = mockAdapter();
+    render(<SecuritySheet client={anyClient} adapter={adapter} onClose={() => undefined} />);
+    const status = await screen.findByTestId("security-status");
+    const dialog = status.closest(".sheet") as HTMLElement;
+    expect(dialog.getAttribute("data-position")).toBe("center");
+    expect(dialog.getAttribute("data-contrast")).toBe("wcag");
+    expect(dialog.className).toContain("hc");
+    // the Recover flow itself carries the contrast markers
+    fireEvent.click(screen.getByTestId("start-recover"));
+    const flow = await screen.findByTestId("recover");
+    expect(flow.className).toContain("hc");
+    expect(flow.getAttribute("data-contrast")).toBe("wcag");
+    // CSS contract: elevated surfaces are DEFINED for both themes (light
+    // defaults used to fall through to dark hexes = the unreadability bug)
+    const css = readFileSync("src/styles.css", "utf8");
+    expect(css).toMatch(/:root\s*\{[^}]*--bg-elev:/s);
+    expect(css).toMatch(/\[data-theme="dark"\]\s*\{[^}]*--bg-elev:/);
+    expect(css).toMatch(/:root:not\(\[data-theme\]\)\s*\{[^}]*--bg-elev:/);
+    // UTD + recover & verify text no longer sits at 60% opacity, and the help
+    // link uses the theme-aware accent link
+    expect(css).toMatch(/\.msg-redacted, \.msg-utd \{ opacity: \.85/);
+    expect(css).toMatch(/\.utd-help \{[^}]*var\(--accent-link/);
   });
 });
 

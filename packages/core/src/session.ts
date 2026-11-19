@@ -27,6 +27,9 @@ export interface SessionManagerOptions {
   secrets: SecretPort;
   /** test seam (fake homeserver); undefined in prod = js-sdk uses global fetch */
   fetchFn?: typeof globalThis.fetch;
+  /** Enable rust crypto (Megolm E2EE) for every session; initialized before
+   *  the first startClient so to-device key sharing is processed. Default false. */
+  initCrypto?: boolean;
 }
 
 interface LiveSession {
@@ -34,6 +37,16 @@ interface LiveSession {
   client: MatrixClient;
   started: boolean;
   attached: boolean;
+}
+
+/**
+ * initRustCrypto must run BEFORE startClient so the crypto stack processes
+ * the initial /sync (to-device room keys, OTK counts). IndexedDB only where
+ * it exists (Electron renderer); vitest/node gets the in-memory store.
+ */
+async function ensureCrypto(client: MatrixClient): Promise<void> {
+  if (client.getCrypto()) return;
+  await client.initRustCrypto({ useIndexedDB: typeof indexedDB !== "undefined" });
 }
 
 /**
@@ -66,18 +79,15 @@ export class SessionManager {
         orphans.push(meta);
         continue;
       }
-      this.live.set(meta.accountId, {
-        meta,
-        client: createClientSession({
-          homeserverUrl: meta.homeserverUrl,
-          accessToken: token,
-          deviceId: meta.deviceId,
-          userId: meta.userId,
-          fetchFn: this.fetchFn,
-        }),
-        started: false,
-        attached: false,
+      const client = createClientSession({
+        homeserverUrl: meta.homeserverUrl,
+        accessToken: token,
+        deviceId: meta.deviceId,
+        userId: meta.userId,
+        fetchFn: this.fetchFn,
       });
+      if (this.opts.initCrypto) await ensureCrypto(client);
+      this.live.set(meta.accountId, { meta, client, started: false, attached: false });
       this.activeId ??= meta.accountId;
     }
     return orphans;
@@ -88,7 +98,7 @@ export class SessionManager {
       homeserverUrl: creds.homeserverUrl,
       fetchFn: this.fetchFn,
     });
-    const res = await client.login("m.password", {
+    const res = await client.login("m.login.password", {
       identifier: { type: "m.id.user", user: creds.username },
       password: creds.password,
     });
@@ -104,7 +114,18 @@ export class SessionManager {
       createdAt: new Date().toISOString(),
     });
     await this.opts.secrets.save(secretKeyFor(accountId), res.access_token);
-    this.live.set(accountId, { meta, client, started: false, attached: false });
+    // Login-flow clients do not know their deviceId until a whoami round-trip;
+    // swap for a fully-credentialed one before touching crypto (Megolm + RTC poller
+    // both hard-require deviceId — js-sdk 45).
+    const sessionClient = createClientSession({
+      homeserverUrl: creds.homeserverUrl,
+      accessToken: res.access_token,
+      deviceId: res.device_id,
+      userId: res.user_id,
+      fetchFn: this.fetchFn,
+    });
+    if (this.opts.initCrypto) await ensureCrypto(sessionClient);
+    this.live.set(accountId, { meta, client: sessionClient, started: false, attached: false });
     await this.setActive(accountId);
     return meta;
   }
@@ -138,6 +159,13 @@ export class SessionManager {
   onRooms(listener: (accountId: string, rooms: RoomSummary[]) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  /** The active account's js-sdk client (events, crypto, room APIs). Throws if none. */
+  activeClient(): MatrixClient {
+    const s = this.activeId ? this.live.get(this.activeId) : undefined;
+    if (!s) throw new Error("no active session");
+    return s.client;
   }
 
   /** Full local teardown for the account (server logout best-effort, secret wiped). */

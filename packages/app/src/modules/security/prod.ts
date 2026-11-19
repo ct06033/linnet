@@ -23,73 +23,82 @@ interface SasCallbacks {
   confirm(): Promise<void>;
   cancel(): Promise<void>;
 }
+// Runtime shape (matrix-js-sdk 45 + wasm 18.9.2), live-proven on HS-A
+// (W5a-3): the Verifier has NO waitForDone, the request's is the phase enum
+// (Done=5, Cancelled=6), and the RECEIVER must call verify() to flush its
+// SAS start — rust never auto-sends it (emojis stay hidden forever otherwise).
 interface VerifierLike {
+  verify?(): Promise<unknown>;
+  getShowSasCallbacks?(): SasCallbacks | null;
+  callbacks?: SasCallbacks | null;
   on(ev: string, cb: (...args: never[]) => void): void;
-  on(ev: "show_sas", cb: (cb: SasCallbacks) => void): void;
-  waitForDone?(): Promise<boolean>;
 }
 interface RequestLike {
-  verifier?: unknown;
+  verifier?: VerifierLike;
+  phase?: number;
   accept?(): Promise<void>;
   cancel?(p?: { reason?: string }): Promise<void>;
   on(ev: string, cb: (...a: never[]) => void): void;
   off(ev: string, cb: (...a: never[]) => void): void;
 }
 
-function getVerifier(request: unknown, timeoutMs = 60000): Promise<VerifierLike> {
-  const req = request as RequestLike;
-  if (req.verifier) return Promise.resolve(req.verifier as VerifierLike);
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      req.off("change", onChange);
-      reject(new Error("verification timed out waiting for the other session"));
-    }, timeoutMs);
-    function onChange(): void {
-      if (req.verifier) {
-        clearTimeout(timer);
-        req.off("change", onChange);
-        resolve(req.verifier as VerifierLike);
-      }
-    }
-    req.on("change", onChange as never);
-  });
+const nap = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function getVerifier(request: RequestLike, timeoutMs = 60000): Promise<VerifierLike> {
+  const t0 = Date.now();
+  for (;;) {
+    // rq.verifier is only exposed once the request reaches Started phase
+    if (request.verifier) return request.verifier;
+    if (request.phase === 6) throw new Error("verification cancelled");
+    if (Date.now() - t0 > timeoutMs) throw new Error("verification timed out waiting for the other session");
+    await nap(150);
+  }
 }
 
-/** Wrap a js-sdk VerificationRequest into the UI's VerifyHandle contract. */
-export function handleFor(request: unknown): VerifyHandle {
-  const verifierP = getVerifier(request);
+/** Wrap a js-sdk VerificationRequest into the UI's VerifyHandle contract.
+ *  Sequence per the W5a-3 live proof: verifier appears at Started -> drive
+ *  verify() (sends OUR sas start; no-op on the initiator) -> poll
+ *  getShowSasCallbacks() (show_sas does NOT replay as an event; the accessor
+ *  does) -> confirm/cancel -> poll request phase for Done(5)/Cancelled(6). */
+export function handleFor(rawRequest: unknown): VerifyHandle {
+  const request = rawRequest as RequestLike;
   let sasCb: SasCallbacks | null = null;
-  const showP = verifierP.then(
-    (v) =>
-      new Promise<SasCallbacks>((resolve) => {
-        v.on("show_sas", ((cb: SasCallbacks) => {
+  const showP = getVerifier(request)
+    .then(async (v) => {
+      void Promise.resolve(v.verify?.()).catch(() => {
+        /* flow ends in cancel/timeout — phase polling below resolves the UI */
+      });
+      const t0 = Date.now();
+      for (;;) {
+        const cb = v.getShowSasCallbacks?.() ?? v.callbacks ?? null;
+        if (cb) {
           sasCb = cb;
-          resolve(cb);
-        }) as never);
-      }),
-  );
-  const finishedP = new Promise<"done" | "cancelled">((resolve) => {
-    void verifierP
-      .then((v) => {
-        v.on("cancel", (() => resolve("cancelled")) as never);
-        if (typeof v.waitForDone === "function") {
-          void v.waitForDone().then((ok) => resolve(ok === false ? "cancelled" : "done"));
-        } else {
-          void (request as { waitForDone?: () => Promise<void> }).waitForDone?.().then(() => resolve("done"));
+          return cb;
         }
-      })
-      .catch(() => resolve("cancelled"));
-  });
+        if (Date.now() - t0 > 45000) throw new Error("timed out waiting for the other session to start SAS");
+        await nap(100);
+      }
+    })
+    .catch(() => null);
+  const finishedP = (async (): Promise<"done" | "cancelled"> => {
+    const t0 = Date.now();
+    for (;;) {
+      if (request.phase === 5) return "done";
+      if (request.phase === 6) return "cancelled";
+      if (Date.now() - t0 > 120000) return "cancelled";
+      await nap(250);
+    }
+  })();
   return {
-    entries: async () => (await showP).sas,
+    entries: async () => (await showP)?.sas ?? [],
     confirm: async () => {
-      await (sasCb ?? (await showP)).confirm();
+      await (sasCb ?? (await showP))?.confirm();
     },
     cancel: async () => {
       try {
-        await (sasCb ?? (await showP)).cancel();
+        await (sasCb ?? (await showP))?.cancel();
       } catch {
-        await (request as RequestLike).cancel?.({ reason: "cancelled in linnet" });
+        await request.cancel?.({ reason: "cancelled in linnet" });
       }
     },
     finished: () => finishedP,

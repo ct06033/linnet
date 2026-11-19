@@ -43,6 +43,29 @@ export async function createSpace(
   return res.room_id;
 }
 
+/** W12 item 12: plain-room creation twin of createSpace (same dialog shape,
+ *  no m.space marker). W12 item 7 parity: encrypted BY DEFAULT (w12-core rule —
+ *  opting out is the explicit action; public forces the opt-out). */
+export async function createRoom(
+  client: MatrixClient,
+  opts: { name: string; isPublic: boolean; encrypt?: boolean },
+): Promise<string> {
+  const encrypt = opts.encrypt !== false && !opts.isPublic;
+  const res = await client.createRoom({
+    name: opts.name,
+    visibility: opts.isPublic ? Visibility.Public : Visibility.Private,
+    preset: opts.isPublic ? Preset.PublicChat : Preset.PrivateChat,
+    ...(encrypt
+      ? {
+          initial_state: [
+            { type: "m.room.encryption", state_key: "", content: { algorithm: MEGOLM_ALGORITHM } },
+          ],
+        }
+      : {}),
+  });
+  return res.room_id;
+}
+
 /** Our homeserver name — m.space.child content.via (required for an ACTIVE
  *  link; empty/absent via means the child was removed). */
 export function spaceVia(client: MatrixClient): string[] {

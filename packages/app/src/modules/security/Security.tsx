@@ -91,6 +91,18 @@ export function SecuritySheet(props: SheetProps): ReactNode {
   }, [adapter, client]);
   useEffect(() => refresh(), [refresh]);
 
+  // W12 item 2: the sheet is fixed-position chrome without useModalA11y;
+  // Escape must close it like every other openable surface
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === "Escape") closeRef.current();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   // while the sheet is open, an incoming verification from another session
   // takes over the panel (MVP scope; a global nudge centre is P2 per PRD)
   useEffect(() => {
@@ -103,7 +115,7 @@ export function SecuritySheet(props: SheetProps): ReactNode {
 
   return (
     <div className="sheet-backdrop" data-testid="security-sheet" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="sheet">
+      <div className="sheet security-center hc" data-position="center" data-contrast="wcag" role="dialog" aria-modal="true" aria-label="Security and recovery">
         <header>
           <span>Security &amp; encryption</span>
           <button aria-label="Close" onClick={onClose} data-testid="sheet-close">✕</button>
@@ -333,7 +345,7 @@ function RecoverFlow(props: { client: MatrixClient; adapter: SecurityAdapter; on
   switch (st.step) {
     case "route":
       return (
-        <div className="recover" data-testid="recover">
+        <div className="recover hc" data-contrast="wcag" data-testid="recover">
           <p>How do you want to unlock your encrypted history?</p>
           <button onClick={() => dispatchSt({ t: "pick", route: "passphrase" })} data-testid="recover-pass">Security passphrase</button>
           <button onClick={() => dispatchSt({ t: "pick", route: "key" })} data-testid="recover-key">Recovery key</button>
@@ -341,7 +353,7 @@ function RecoverFlow(props: { client: MatrixClient; adapter: SecurityAdapter; on
       );
     case "input":
       return (
-        <form className="recover" data-testid="recover" onSubmit={(e) => e.preventDefault()}>
+        <form className="recover hc" data-contrast="wcag" data-testid="recover" onSubmit={(e) => e.preventDefault()}>
           <input
             aria-label={st.route === "key" ? "Recovery key" : "Security passphrase"}
             type={st.route === "key" ? "text" : "password"}
@@ -364,7 +376,7 @@ function RecoverFlow(props: { client: MatrixClient; adapter: SecurityAdapter; on
     case "working":
     case "progress":
       return (
-        <div className="recover" data-testid="recover">
+        <div className="recover hc" data-contrast="wcag" data-testid="recover">
           <p data-testid="recover-progress">
             {st.step === "progress" && st.total ? `Importing ${st.imported ?? 0}/${st.total} keys…` : "Unlocking…"}
           </p>
@@ -372,14 +384,14 @@ function RecoverFlow(props: { client: MatrixClient; adapter: SecurityAdapter; on
       );
     case "done":
       return (
-        <div className="recover" data-testid="recover">
+        <div className="recover hc" data-contrast="wcag" data-testid="recover">
           <p data-testid="recover-done">✓ Imported {st.imported} decryption keys.</p>
           <button onClick={props.onDone} data-testid="recover-close">Close</button>
         </div>
       );
     case "error":
       return (
-        <div className="recover" data-testid="recover">
+        <div className="recover hc" data-contrast="wcag" data-testid="recover">
           <p className="err" data-testid="recover-error">{st.message}</p>
           <button onClick={() => dispatchSt({ t: "retry" })} data-testid="recover-retry">Try again</button>
         </div>

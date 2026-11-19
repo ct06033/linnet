@@ -13,6 +13,29 @@ import { useEffect, useRef, type RefObject } from "react";
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select, textarea, [tabindex]:not([tabindex="-1"])';
 
+/**
+ * W12 item 2: pointerdown-outside dismissal for dropdowns/menus/popovers.
+ * `containerRef` should wrap BOTH the trigger and the open surface so the
+ * click that opens the menu does not immediately close it. Works alongside
+ * useModalA11y (which owns Escape for real dialogs); for plain menus pair
+ * with a keydown handler where Escape is not already global.
+ */
+export function useClickAway(ref: RefObject<HTMLElement | null>, onDismiss: () => void, active: boolean): void {
+  const cb = useRef(onDismiss);
+  cb.current = onDismiss;
+  useEffect(() => {
+    if (!active) return;
+    const onDown = (e: Event): void => {
+      const el = ref.current;
+      if (!el) return;
+      const t = e.target;
+      if (t instanceof Node && !el.contains(t)) cb.current();
+    };
+    document.addEventListener("pointerdown", onDown, true);
+    return () => document.removeEventListener("pointerdown", onDown, true);
+  }, [active, ref]);
+}
+
 export function useModalA11y(ref: RefObject<HTMLElement | null>, onClose: () => void, open: boolean): void {
   const closeRef = useRef(onClose);
   closeRef.current = onClose;

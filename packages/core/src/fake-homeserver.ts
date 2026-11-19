@@ -127,6 +127,8 @@ export function makeSyncSnapshot(opts: {
   invites?: FakeInvite[];
   /** Room ids listed under m.direct for opts.userId (drives the isDM heuristic). */
   direct?: string[];
+  /** W6: extra global account_data events (type -> content). */
+  accountData?: Record<string, Record<string, unknown>>;
   nextBatch?: string;
 }): unknown {
   const ev = (
@@ -225,9 +227,10 @@ export function makeSyncSnapshot(opts: {
     next_batch: opts.nextBatch ?? "b2",
     rooms: { join, invite },
     account_data: {
-      events: opts.direct
-        ? [ev("$root", "m.direct", { [opts.userId]: opts.direct })]
-        : [],
+      events: [
+        ...(opts.direct ? [ev("$root", "m.direct", { [opts.userId]: opts.direct })] : []),
+        ...Object.entries(opts.accountData ?? {}).map(([type, content]) => ev("$root", type, content)),
+      ],
     },
     presence: { events: [] },
     to_device: { events: [] },
@@ -243,6 +246,8 @@ interface QueueItem {
   /** W5b: state events for a NEW room (from /createRoom) — delivered as
    *  rooms.join[roomId].state on the creator's next sync. */
   initialState?: Record<string, unknown>[];
+  /** W6: global account data written via PUT /user/.../account_data/... */
+  accountData?: { type: string; content: Record<string, unknown> };
 }
 
 export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithControls {
@@ -253,6 +258,13 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
   const waiters = new Map<string, Array<() => void>>();
   const batches = new Map<string, number>();
   const stateStores = new Map<string, Map<string, Record<string, unknown>>>();
+  // W6: global account data per user (notification settings et al.)
+  const accountStore = new Map<string, Map<string, Record<string, unknown>>>();
+  const acctData = (userId: string): Map<string, Record<string, unknown>> => {
+    let m = accountStore.get(userId);
+    if (!m) accountStore.set(userId, (m = new Map()));
+    return m;
+  };
   const history = new Map<string, FakeEventLike[]>();
   let eventSeq = 1;
   // W4c: media bytes are STORED so download routes can serve them back
@@ -373,6 +385,7 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
           { timeline: FakeEventLike[]; ephemeral: FakeEventLike[]; state: Record<string, unknown>[] }
         >();
         for (const item of q) {
+          if (item.accountData) continue;
           const bucket = byRoom.get(item.roomId) ?? { timeline: [], ephemeral: [], state: [] };
           if (item.event) bucket.timeline.push(item.event);
           if (item.ephemeral) bucket.ephemeral.push(item.ephemeral);
@@ -389,10 +402,15 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
             state: { events: bucket.state },
           };
         }
+        const adEvents = q
+          .filter((i): i is QueueItem & { accountData: { type: string; content: Record<string, unknown> } } =>
+            Boolean(i.accountData),
+          )
+          .map((i) => ({ type: i.accountData.type, sender: userId, content: i.accountData.content }));
         return jsonRes({
           next_batch: `b${n}`,
           rooms: { join, invite: {}, leave: {} },
-          account_data: { events: [] },
+          account_data: { events: adEvents },
           presence: { events: [] },
           to_device: { events: [] },
           device_lists: { changed: {}, left: {} },
@@ -475,7 +493,7 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
     if ((joinM || joinIn) && method === "POST") {
       record("POST", path, await bodyJson(init));
       const roomId = decodeURIComponent((joinM?.[1] ?? joinIn?.[1])!);
-      fanout({
+      const joinEv: FakeEventLike = {
         type: "m.room.member",
         sender: userId,
         state_key: userId,
@@ -483,7 +501,18 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
         room_id: roomId,
         event_id: nextEventId(),
         origin_server_ts: ++ts,
-      });
+      };
+      // W6: real HS transitions invite_state -> room state on join; deliver
+      // the invite's state (sans membership) + own join echo so the joiner's
+      // list shows a proper joined room, not a nameless husk
+      const snap = (opts.sync ? opts.sync(userId) : {}) as {
+        rooms?: { invite?: Record<string, { invite_state?: { events?: Record<string, unknown>[] } }> };
+      };
+      const carried = (snap.rooms?.invite?.[roomId]?.invite_state?.events ?? []).filter(
+        (e) => e["type"] !== "m.room.member",
+      );
+      enqueue(userId, { roomId, event: joinEv, initialState: carried });
+      fanout(joinEv, userId);
       return jsonRes({ room_id: roomId });
     }
 
@@ -552,6 +581,25 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
       stateStores.set(roomId, store);
       enqueue(userId, { roomId, initialState: events });
       return jsonRes({ room_id: roomId });
+    }
+
+    // W6: GET/PUT /user/{userId}/account_data/{type} — global settings storage
+    const adM = path.match(/\/user\/[^/]+\/account_data\/([^/]+)$/);
+    if (adM && account) {
+      const type = decodeURIComponent(adM[1]!);
+      const store = acctData(account.userId);
+      if (method === "PUT") {
+        const content = (await bodyJson(init)) as Record<string, unknown>;
+        record("PUT", path, content);
+        store.set(type, content);
+        enqueue(account.userId, { roomId: "", accountData: { type, content } });
+        return jsonRes(content);
+      }
+      if (method === "GET") {
+        const hit = store.get(type);
+        if (!hit) return jsonRes({ errcode: "M_NOT_FOUND" }, 404);
+        return jsonRes(hit);
+      }
     }
 
     // POST /rooms/{roomId}/leave — W5b: echo the leave membership back to the

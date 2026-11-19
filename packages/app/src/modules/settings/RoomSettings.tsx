@@ -13,6 +13,7 @@ import {
 } from "matrix-js-sdk";
 import type { LinnetModule } from "@linnet/core";
 import { uploadBytes } from "../media/core.js";
+import { modeFor, readPrefs, setRoomMode, writePrefs, type NotifyMode } from "../notify/model.js";
 
 export interface RoomSettingsProps {
   client: MatrixClient;
@@ -44,6 +45,8 @@ export function RoomSettings({ client, roomId, onClose }: RoomSettingsProps): Re
   const [busy, setBusy] = useState(false);
   const [forget, setForget] = useState(false);
   const [left, setLeft] = useState(false);
+  const [mode, setMode] = useState<NotifyMode>(() => modeFor(readPrefs(client), roomId));
+  const [kwDraft, setKwDraft] = useState(() => readPrefs(client).keywords.join(", "));
 
   const can = (type: EventType | string): boolean => room?.currentState.maySendStateEvent(type, me) ?? false;
   const canName = can(EventType.RoomName);
@@ -176,6 +179,40 @@ export function RoomSettings({ client, roomId, onClose }: RoomSettingsProps): Re
           {members.invited.length === 0 && <li className="empty">no pending invites</li>}
         </ul>
         {members.invitedYou && <p className="member invited-you">invited-you</p>}
+      </section>
+
+      <section className="notify-zone" aria-label="Notifications">
+        <label>
+          Notifications
+          <select
+            aria-label="Room notification mode"
+            value={mode}
+            disabled={busy}
+            onChange={(e) => {
+              const m = e.target.value as NotifyMode;
+              setMode(m);
+              void act(() => setRoomMode(client, roomId, m), "notification mode");
+            }}
+          >
+            <option value="all">All messages</option>
+            <option value="mentions">Mentions only</option>
+            <option value="mute">Nothing (mute)</option>
+          </select>
+        </label>
+        <label>
+          Keywords (global, comma-separated)
+          <input
+            aria-label="Notify keywords"
+            value={kwDraft}
+            disabled={busy}
+            onChange={(e) => {
+              const v = e.target.value;
+              setKwDraft(v);
+              const keywords = v.split(",").map((k) => k.trim()).filter(Boolean);
+              void act(() => writePrefs(client, { ...readPrefs(client), keywords }), "keywords");
+            }}
+          />
+        </label>
       </section>
 
       <section className="danger-zone">

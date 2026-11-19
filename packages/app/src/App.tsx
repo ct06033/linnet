@@ -3,7 +3,7 @@
  * No accounts → Login. Otherwise → live room summaries of the ACTIVE account
  * (spaces rail is still scaffold — real space graph lands with W3).
  */
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { AccountMetadata, ModuleRegistry, RoomSummary, SlashCommandContribution } from "@linnet/core";
 import { bootRegistry } from "./modules.js";
 import { readConfig } from "./bridge.js";
@@ -12,7 +12,8 @@ import { Login } from "./screens/Login.js";
 import { RoomView } from "./modules/messages/RoomView.js";
 import { SpaceRail } from "./modules/spaces/SpaceRail.js";
 import { addableRooms, homeRooms, spaceEntries, spacesForRail } from "./modules/spaces/tree.js";
-import { addRoomToSpace, createSpace, removeRoomFromSpace } from "./modules/spaces/actions.js";
+import { addRoomToSpace, createSpace, leaveAndMaybeForget, removeRoomFromSpace } from "./modules/spaces/actions.js";
+import { NotificationEngine, makeNotifierPort } from "./modules/notify/engine.js";
 
 export function App(): ReactNode {
   const sm = getSessionManager();
@@ -87,6 +88,18 @@ export function App(): ReactNode {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sm, activeId, phase]);
+
+  // W6: notification engine — lives with the active client, dies on switch
+  const focusedRef = useRef<string | null>(null);
+  focusedRef.current = selectedRoom;
+  useEffect(() => {
+    if (!clientForView) return;
+    const engine = new NotificationEngine(clientForView, makeNotifierPort(), {
+      isFocused: (id) => focusedRef.current === id,
+    });
+    engine.start();
+    return () => engine.stop();
+  }, [clientForView]);
 
   async function signOut(id: string): Promise<void> {
     await sm.logout(id);
@@ -179,7 +192,24 @@ export function App(): ReactNode {
             ))}
             <h3>Rooms</h3>
             {invites.map((r) => (
-              <Row key={r.roomId} r={r} selected={selectedRoom === r.roomId} onSelect={setSelectedRoom} />
+              <Row
+                key={r.roomId}
+                r={r}
+                selected={selectedRoom === r.roomId}
+                onSelect={setSelectedRoom}
+                onJoin={
+                  clientForView
+                    ? () => {
+                        void clientForView.joinRoom(r.roomId).catch(() => undefined);
+                      }
+                    : undefined
+                }
+                onDecline={
+                  clientForView
+                    ? () => void leaveAndMaybeForget(clientForView, r.roomId, true).catch(() => undefined)
+                    : undefined
+                }
+              />
             ))}
             {homeList.map((r) => (
               <Row key={r.roomId} r={r} selected={selectedRoom === r.roomId} onSelect={setSelectedRoom} />
@@ -292,17 +322,47 @@ function Row({
   selected,
   onSelect,
   onRemove,
+  onJoin,
+  onDecline,
 }: {
   r: RoomSummary;
   selected: boolean;
   onSelect: (id: string) => void;
   onRemove?: () => void;
+  onJoin?: () => void;
+  onDecline?: () => void;
 }): ReactNode {
   return (
     <button className={`row${selected ? " selected" : ""}`} onClick={() => onSelect(r.roomId)}>
       <span className="name">{r.name}</span>
       {r.invite && <span className="invite">invite</span>}
       {r.unread > 0 && <span className="pill">{r.unread}</span>}
+      {onJoin && (
+        <span
+          role="button"
+          className="row-join"
+          aria-label={`Join ${r.name}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            onJoin();
+          }}
+        >
+          Join
+        </span>
+      )}
+      {onDecline && (
+        <span
+          role="button"
+          className="row-decline"
+          aria-label={`Decline ${r.name}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            onDecline();
+          }}
+        >
+          ✕
+        </span>
+      )}
       {onRemove && (
         <span
           role="button"

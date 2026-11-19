@@ -3,6 +3,8 @@
 # NOTE: not executed in wave 1 (CI runs vite builds only); this file is scaffold + future packaging contract.
 appId: chat.linnet.desktop
 productName: Linnet
+# electron must not derive it from the scoped npm name (@linnet/desktop -> "@linnetdesktop")
+executableName: linnet
 copyright: "Copyright (C) Linnet contributors — AGPL-3.0-only"
 
 directories:
@@ -15,7 +17,7 @@ files:
 artifactName: \${productName}-\${version}-\${os}-\${arch}.\${ext}
 
 extraResources:
-  - from: ../packages/app/dist
+  - from: ../../packages/app/dist
     to: renderer
   # config.json deployment: drop <resourcesPath>/config.json (see docs/config.md)
 

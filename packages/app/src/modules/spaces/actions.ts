@@ -28,6 +28,20 @@ export async function createSpace(
   return res.room_id;
 }
 
+/** W12 item 12: plain-room creation twin of createSpace (same dialog shape,
+ *  no m.space marker). */
+export async function createRoom(
+  client: MatrixClient,
+  opts: { name: string; isPublic: boolean },
+): Promise<string> {
+  const res = await client.createRoom({
+    name: opts.name,
+    visibility: opts.isPublic ? Visibility.Public : Visibility.Private,
+    preset: opts.isPublic ? Preset.PublicChat : Preset.PrivateChat,
+  });
+  return res.room_id;
+}
+
 /** Our homeserver name — m.space.child content.via (required for an ACTIVE
  *  link; empty/absent via means the child was removed). */
 export function spaceVia(client: MatrixClient): string[] {

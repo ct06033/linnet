@@ -11,7 +11,8 @@ import { getSessionManager } from "./session-context.js";
 import { Login } from "./screens/Login.js";
 import { RoomView } from "./modules/messages/RoomView.js";
 import { SpaceRail } from "./modules/spaces/SpaceRail.js";
-import { addRoomToSpace, createSpace, leaveAndMaybeForget, removeRoomFromSpace } from "./modules/spaces/actions.js";
+import { addRoomToSpace, createRoom, createSpace, leaveAndMaybeForget, removeRoomFromSpace } from "./modules/spaces/actions.js";
+import { JoinRoomDialog, NewRoomDialog, NewSpaceDialog } from "./modules/dialogs.js";
 import { addableRooms, homeRooms, isDirectChild, spaceEntries, spacesForRail } from "./modules/spaces/tree.js";
 import { NotificationEngine, makeNotifierPort } from "./modules/notify/engine.js";
 import { CallBanner } from "./modules/call/CallUi.js";
@@ -32,6 +33,9 @@ export function App(): ReactNode {
   const [menuOpen, setMenuOpen] = useState(false);
   // W12 item 8: room-row context menu (leave/decline/remove live ONLY here)
   const [rowMenu, setRowMenu] = useState<{ roomId: string; x: number; y: number } | null>(null);
+  // W12 item 12: unified bottom-of-rail add control
+  const [railAddOpen, setRailAddOpen] = useState(false);
+  const [railDialog, setRailDialog] = useState<"space" | "room" | "join" | null>(null);
   const [defaultHs, setDefaultHs] = useState<string | undefined>();
   const [selectedRoom, setSelectedRoom] = useState<string | null>(null);
   // W8 theming: applied to <html> at boot; live switchable from the account menu
@@ -43,11 +47,13 @@ export function App(): ReactNode {
   // W12 item 2: click-away (pointerdown outside) dismissal
   const acctZoneRef = useRef<HTMLDivElement | null>(null);
   const ctxMenuRef = useRef<HTMLDivElement | null>(null);
+  const railAddRef = useRef<HTMLDivElement | null>(null);
   useModalA11y(paletteRef, () => setPaletteOpen(false), paletteOpen);
   useModalA11y(addDialogRef, () => setAddOpen(false), addOpen);
   useClickAway(acctZoneRef, () => setMenuOpen(false), menuOpen);
   useClickAway(ctxMenuRef, () => setRowMenu(null), rowMenu !== null);
   useClickAway(paletteRef, () => setPaletteOpen(false), paletteOpen);
+  useClickAway(railAddRef, () => setRailAddOpen(false), railAddOpen);
   useEffect(() => {
     applyAppearance.current = mountAppearance();
   }, []);
@@ -84,6 +90,7 @@ export function App(): ReactNode {
         setPaletteOpen(false);
         setMenuOpen(false);
         setRowMenu(null);
+        setRailAddOpen(false);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -255,12 +262,31 @@ export function App(): ReactNode {
             setSpaceId(id);
             setAddOpen(false);
           }}
-          onCreate={async (name, isPublic) => {
-            if (!clientForView) throw new Error("not signed in");
-            const id = await createSpace(clientForView, { name, isPublic });
-            setSpaceId(id);
-          }}
         />
+        <div className="rail-bottom" ref={railAddRef}>
+          {railAddOpen && (
+            <div className="add-menu" role="menu" aria-label="Add space or room" data-testid="rail-add-menu">
+              <button role="menuitem" onClick={() => { setRailAddOpen(false); setRailDialog("space"); }}>
+                New space
+              </button>
+              <button role="menuitem" onClick={() => { setRailAddOpen(false); setRailDialog("room"); }}>
+                New room
+              </button>
+              <button role="menuitem" onClick={() => { setRailAddOpen(false); setRailDialog("join"); }}>
+                Discover or join room
+              </button>
+            </div>
+          )}
+          <button
+            className="rail-add"
+            aria-label="Add space or room"
+            aria-haspopup="menu"
+            aria-expanded={railAddOpen}
+            onClick={() => setRailAddOpen((v) => !v)}
+          >
+            +
+          </button>
+        </div>
       </nav>
 
       <aside className="roomlist" aria-label="Rooms">
@@ -314,19 +340,26 @@ export function App(): ReactNode {
               </button>
             </div>
             {addOpen && (
-              <div className="dialog" role="dialog" aria-modal="true" aria-label="Add existing room" ref={addDialogRef}>
-                {addable.length === 0 && <p className="empty">no rooms to add</p>}
-                {addable.map((r) => (
-                  <button
-                    key={r.roomId}
-                    onClick={() => {
-                      if (clientForView && activeSpace) void addRoomToSpace(clientForView, activeSpace.roomId, r.roomId);
-                      setAddOpen(false);
-                    }}
-                  >
-                    {r.name}
-                  </button>
-                ))}
+              <div
+                className="dialog-scrim"
+                onClick={(e) => {
+                  if (e.target === e.currentTarget) setAddOpen(false);
+                }}
+              >
+                <div className="dialog" role="dialog" aria-modal="true" aria-label="Add existing room" ref={addDialogRef}>
+                  {addable.length === 0 && <p className="empty">no rooms to add</p>}
+                  {addable.map((r) => (
+                    <button
+                      key={r.roomId}
+                      onClick={() => {
+                        if (clientForView && activeSpace) void addRoomToSpace(clientForView, activeSpace.roomId, r.roomId);
+                        setAddOpen(false);
+                      }}
+                    >
+                      {r.name}
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
             {entries.map((e) =>
@@ -464,6 +497,32 @@ export function App(): ReactNode {
             {filtered.length === 0 && <li className="empty">no matching module command</li>}
           </ul>
         </div>
+      )}
+      {railDialog === "space" && clientForView && (
+        <NewSpaceDialog
+          onClose={() => setRailDialog(null)}
+          onSubmit={async (name, isPublic) => {
+            const id = await createSpace(clientForView, { name, isPublic });
+            setSpaceId(id);
+          }}
+        />
+      )}
+      {railDialog === "room" && clientForView && (
+        <NewRoomDialog
+          onClose={() => setRailDialog(null)}
+          onSubmit={async (name, isPublic) => {
+            const id = await createRoom(clientForView, { name, isPublic });
+            setSelectedRoom(id);
+          }}
+        />
+      )}
+      {railDialog === "join" && clientForView && (
+        <JoinRoomDialog
+          onClose={() => setRailDialog(null)}
+          onJoin={async (address) => {
+            await clientForView.joinRoom(address);
+          }}
+        />
       )}
     </div>
   );

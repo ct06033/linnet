@@ -66,11 +66,13 @@ describe("W5b spaces", () => {
     expect(screen.getByRole("button", { name: "Home" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Space Nested" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Space Work" })).toBeTruthy();
-    // rail order is alphabetical (Nested < Work), Home first, + last
+    // rail order is alphabetical (Nested < Work), Home first; the old "+"
+    // button is gone — W12 item 12 unified it into the bottom Add control
     const names = Array.from(document.querySelectorAll("nav.rail button.space")).map((b) =>
       b.getAttribute("aria-label"),
     );
-    expect(names).toEqual(["Home", "Space Nested", "Space Work", "New space"]);
+    expect(names).toEqual(["Home", "Space Nested", "Space Work"]);
+    expect(document.querySelector("nav.rail .space.add")).toBeNull();
   });
 
   it("S8: spaces never render as room rows in Home", async () => {
@@ -135,7 +137,9 @@ describe("W5b spaces", () => {
   it("S3: New space dialog creates an m.space that lands live from sync", async () => {
     render(<App />);
     await waitForRooms();
-    fireEvent.click(screen.getByRole("button", { name: "New space" }));
+    // W12 item 12: unified bottom Add control → New space (dialog unchanged)
+    fireEvent.click(screen.getByRole("button", { name: "Add space or room" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "New space" }));
     const dialog = await screen.findByRole("dialog", { name: "Create a new space" });
     fireEvent.change(dialog.querySelector("input[aria-label='Space name']") as HTMLInputElement, {
       target: { value: "Fun" },

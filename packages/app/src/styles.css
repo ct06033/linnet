@@ -11,6 +11,19 @@
 :root[data-accent="rose"] { --accent: #e0533d; }
 :root[data-accent="teal"] { --accent: #1f9e8e; }
 :root[data-accent="amber"] { --accent: #d98e04; }
+/* W12 item 3: display density. compact = historic spacing (no rules needed);
+   medium/relaxed grow message-list padding, row height and group rhythm. */
+:root[data-density="medium"] .scroller { padding: 14px 20px; }
+:root[data-density="medium"] .roomview .group { margin-bottom: 8px; }
+:root[data-density="medium"] .roomview .row { padding: 5px 8px; }
+:root[data-density="medium"] .roomview .row.head { margin-top: 16px; }
+:root[data-density="medium"] .roomlist .row { padding: 10px 9px; }
+:root[data-density="relaxed"] .scroller { padding: 22px 24px; }
+:root[data-density="relaxed"] .roomview .group { margin-bottom: 14px; }
+:root[data-density="relaxed"] .roomview .row { padding: 10px 10px; min-height: 32px; }
+:root[data-density="relaxed"] .roomview .row.head { margin-top: 26px; }
+:root[data-density="relaxed"] .roomlist .row { padding: 14px 10px; }
+:root[data-density="relaxed"] .roomlist h3 { margin: 18px 6px 10px; }
 /* W8 a11y: visible focus everywhere + skip link */
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .skip-link { position: absolute; left: -9999px; top: 8px; z-index: 50; background: var(--accent); color: #fff; padding: 8px 14px; border-radius: 8px; }

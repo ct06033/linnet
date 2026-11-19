@@ -15,7 +15,7 @@ import { addRoomToSpace, createSpace, leaveAndMaybeForget, removeRoomFromSpace }
 import { addableRooms, homeRooms, isDirectChild, spaceEntries, spacesForRail } from "./modules/spaces/tree.js";
 import { NotificationEngine, makeNotifierPort } from "./modules/notify/engine.js";
 import { CallBanner } from "./modules/call/CallUi.js";
-import { ACCENTS, loadAppearance, mountAppearance, type Appearance } from "./modules/settings/appearance.js";
+import { ACCENTS, DENSITIES, loadAppearance, mountAppearance, type Appearance } from "./modules/settings/appearance.js";
 import { useClickAway, useModalA11y } from "./modules/a11y.js";
 
 export function App(): ReactNode {
@@ -216,6 +216,19 @@ export function App(): ReactNode {
                   onClick={() => switchAppearance({ ...appearance, mode: m })}
                 >
                   {m}
+                </button>
+              ))}
+            </div>
+            <div className="appearance-row" role="group" aria-label="Display density">
+              <span className="lbl">Density</span>
+              {DENSITIES.map((d) => (
+                <button
+                  key={d.id}
+                  aria-pressed={appearance.density === d.id}
+                  data-density-option={d.id}
+                  onClick={() => switchAppearance({ ...appearance, density: d.id })}
+                >
+                  {d.label}
                 </button>
               ))}
             </div>

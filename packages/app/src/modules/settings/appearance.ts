@@ -6,10 +6,14 @@
 
 export type ThemeMode = "system" | "light" | "dark";
 export type AccentId = "indigo" | "rose" | "teal" | "amber";
+// W12 item 3: display density — compact is the historic spacing (default)
+export type DensityId = "compact" | "medium" | "relaxed";
 
 export interface Appearance {
   mode: ThemeMode;
   accent: AccentId;
+  /** W12 item 3; optional so every pre-density call site keeps typechecking */
+  density?: DensityId;
 }
 
 export const ACCENTS: { id: AccentId; label: string; css: string }[] = [
@@ -19,8 +23,14 @@ export const ACCENTS: { id: AccentId; label: string; css: string }[] = [
   { id: "amber", label: "Amber", css: "#d98e04" },
 ];
 
+export const DENSITIES: { id: DensityId; label: string }[] = [
+  { id: "compact", label: "compact" },
+  { id: "medium", label: "medium" },
+  { id: "relaxed", label: "relaxed" },
+];
+
 const KEY = "linnet.appearance";
-const DEFAULTS: Appearance = { mode: "system", accent: "indigo" };
+const DEFAULTS: Appearance = { mode: "system", accent: "indigo", density: "compact" };
 
 export function loadAppearance(): Appearance {
   try {
@@ -29,7 +39,8 @@ export function loadAppearance(): Appearance {
     const parsed = JSON.parse(raw) as Partial<Appearance>;
     const mode = ["system", "light", "dark"].includes(String(parsed.mode)) ? (parsed.mode as ThemeMode) : "system";
     const accent = ACCENTS.some((a) => a.id === parsed.accent) ? (parsed.accent as AccentId) : "indigo";
-    return { mode, accent };
+    const density = DENSITIES.some((d) => d.id === parsed.density) ? (parsed.density as DensityId) : "compact";
+    return { mode, accent, density };
   } catch {
     return DEFAULTS;
   }
@@ -56,6 +67,8 @@ export interface ThemeTargets {
 export function applyToElement(el: ThemeTargets, a: Appearance, prefersDark: boolean): void {
   el.dataset.theme = resolveTheme(a.mode, prefersDark);
   el.dataset.accent = a.accent;
+  // W12 item 3: density rides the same <html> attribute channel
+  el.dataset.density = a.density ?? "compact";
   if (el.style && a.accent !== "indigo") {
     const hit = ACCENTS.find((x) => x.id === a.accent);
     if (hit) el.style.setProperty("--accent", hit.css);

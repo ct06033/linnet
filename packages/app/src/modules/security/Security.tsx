@@ -6,6 +6,26 @@
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import type { MatrixClient } from "matrix-js-sdk";
+import { SasPanel, SessionsSection } from "./sessions.js";
+
+export interface SasEntry {
+  emoji?: string[];
+  description: string;
+}
+export type VerifyHandle = {
+  entries(): Promise<SasEntry[]>;
+  confirm(): Promise<void>;
+  cancel(): Promise<void>;
+  finished(): Promise<"done" | "cancelled">;
+};
+export type SessionRow = {
+  deviceId: string;
+  name: string;
+  lastSeen?: string;
+  ip?: string;
+  verified: boolean;
+  current: boolean;
+};
 import {
   wizardInitial, wizardReduce, type WizardStep,
   restoreInitial, restoreReduce, type RestoreStep,
@@ -18,6 +38,10 @@ export interface SecurityAdapter {
   restoreRecoveryKey(client: MatrixClient, key: string, onProgress: (p: { total?: number; imported?: number }) => void): Promise<number>;
   status(client: MatrixClient): Promise<SecurityStatus>;
   runBackup(client: MatrixClient): Promise<void>;
+  sessions(client: MatrixClient): Promise<SessionRow[]>;
+  beginDeviceVerification(client: MatrixClient, targetDeviceId: string): Promise<VerifyHandle>;
+  revoke(client: MatrixClient, deviceId: string, password: string): Promise<void>;
+  onIncomingRequest(client: MatrixClient, cb: (h: VerifyHandle, request: unknown) => void): () => void;
 }
 
 export function SecurityBanner(props: { status: SecurityStatus | null; encrypted: boolean; onClick: () => void }): ReactNode {
@@ -56,12 +80,24 @@ export interface SheetProps {
 export function SecuritySheet(props: SheetProps): ReactNode {
   const { client, adapter, onClose } = props;
   const [status, setStatus] = useState<SecurityStatus | null>(null);
-  const [flow, setFlow] = useState<"none" | "setup" | "recover">("none");
+  const [flow, setFlow] = useState<"none" | "setup" | "recover" | "sessions">("none");
+  const [verify, setVerify] = useState<VerifyHandle | null>(null);
+  const [incoming, setIncoming] = useState(false);
 
   const refresh = useCallback(() => {
     adapter.status(client).then(setStatus).catch(() => setStatus(null));
   }, [adapter, client]);
   useEffect(() => refresh(), [refresh]);
+
+  // while the sheet is open, an incoming verification from another session
+  // takes over the panel (MVP scope; a global nudge centre is P2 per PRD)
+  useEffect(() => {
+    if (typeof adapter.onIncomingRequest !== "function") return;
+    return adapter.onIncomingRequest(client, (h) => {
+      setIncoming(true);
+      setVerify(h);
+    });
+  }, [adapter, client]);
 
   return (
     <div className="sheet-backdrop" data-testid="security-sheet" onClick={(e) => e.target === e.currentTarget && onClose()}>
@@ -99,12 +135,29 @@ export function SecuritySheet(props: SheetProps): ReactNode {
             >
               Back up now
             </button>
-            <p className="note" data-testid="devices-note">Session list &amp; verification land in the next wave.</p>
+            <button onClick={() => setFlow("sessions")} data-testid="start-sessions">Sessions &amp; devices</button>
           </>
         )}
 
         {flow === "setup" && <SetupWizard client={client} adapter={adapter} onDone={() => { setFlow("none"); refresh(); }} />}
         {flow === "recover" && <RecoverFlow client={client} adapter={adapter} onDone={() => setFlow("none")} />}
+        {flow === "sessions" && (
+          verify ? (
+            <SasPanel handle={verify} incoming={incoming} onDone={() => { setVerify(null); setIncoming(false); }} />
+          ) : (
+            <SessionsSection
+              client={client}
+              adapter={adapter}
+              myUserId={client.getUserId() ?? ""}
+              onVerifyHandle={(h) => setVerify(h)}
+            />
+          )
+        )}
+        {verify && flow !== "sessions" && (
+          <div className="incoming-verify" data-testid="incoming-verify">
+            <SasPanel handle={verify} incoming onDone={() => { setVerify(null); setIncoming(false); }} />
+          </div>
+        )}
       </div>
     </div>
   );

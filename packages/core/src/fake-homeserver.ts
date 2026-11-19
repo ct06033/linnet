@@ -42,6 +42,12 @@ export interface FakeRoom {
   events?: FakeEventLike[];
   /** older history returned by /messages back-pagination */
   old?: FakeEventLike[];
+  /** W5b: seed m.room.create with room_type m.space */
+  space?: boolean;
+  /** W5b: m.space.child state events keyed by child room id */
+  children?: Record<string, { order?: string; via?: string[] }>;
+  /** W5b: replace the default m.room.power_levels content (PL-gating tests) */
+  powerLevels?: Record<string, unknown>;
 }
 
 export interface FakeInvite {
@@ -144,8 +150,18 @@ export function makeSyncSnapshot(opts: {
   // state_key makes them real state events; power_levels satisfies js-sdk auth rules (learned the hard way)
   const stateEvents = (roomId: string, r: FakeRoom) => {
     const out: Record<string, unknown>[] = [
-      ev(roomId, "m.room.create", { creator: opts.userId, room_version: "11" }, { state_key: "" }),
-      ev(roomId, "m.room.power_levels", { users_default: 100, state_default: 0, events_default: 0, notifications: { room: 100 } }, { state_key: "" }),
+      ev(
+        roomId,
+        "m.room.create",
+        { creator: opts.userId, room_version: "11", ...(r.space ? { type: "m.space" } : {}) },
+        { state_key: "" },
+      ),
+      ev(
+        roomId,
+        "m.room.power_levels",
+        r.powerLevels ?? { users_default: 100, state_default: 0, events_default: 0, notifications: { room: 100 } },
+        { state_key: "" },
+      ),
       ev(roomId, "m.room.name", { name: r.name }, { state_key: "" }),
       ev(roomId, "m.room.member", { membership: "join" }, { state_key: opts.userId }),
     ];
@@ -157,6 +173,17 @@ export function makeSyncSnapshot(opts: {
     }
     for (const [uid, membership] of Object.entries(r.members ?? {})) {
       out.push(ev(roomId, "m.room.member", { membership }, { state_key: uid, sender: uid }));
+    }
+    // W5b: m.space.child links (state_key = child room id; via required to be active)
+    for (const [childId, c] of Object.entries(r.children ?? {})) {
+      out.push(
+        ev(
+          roomId,
+          "m.space.child",
+          { via: c.via ?? ["hs.test"], ...(c.order !== undefined ? { order: c.order } : {}) },
+          { state_key: childId },
+        ),
+      );
     }
     return out;
   };
@@ -213,6 +240,9 @@ interface QueueItem {
   roomId: string;
   event?: FakeEventLike;
   ephemeral?: FakeEventLike;
+  /** W5b: state events for a NEW room (from /createRoom) — delivered as
+   *  rooms.join[roomId].state on the creator's next sync. */
+  initialState?: Record<string, unknown>[];
 }
 
 export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithControls {
@@ -338,11 +368,15 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
       const drain = (): Response => {
         const q = queues.get(userId) ?? [];
         queues.set(userId, []);
-        const byRoom = new Map<string, { timeline: FakeEventLike[]; ephemeral: FakeEventLike[] }>();
+        const byRoom = new Map<
+          string,
+          { timeline: FakeEventLike[]; ephemeral: FakeEventLike[]; state: Record<string, unknown>[] }
+        >();
         for (const item of q) {
-          const bucket = byRoom.get(item.roomId) ?? { timeline: [], ephemeral: [] };
+          const bucket = byRoom.get(item.roomId) ?? { timeline: [], ephemeral: [], state: [] };
           if (item.event) bucket.timeline.push(item.event);
           if (item.ephemeral) bucket.ephemeral.push(item.ephemeral);
+          if (item.initialState) bucket.state.push(...item.initialState);
           byRoom.set(item.roomId, bucket);
         }
         const n = (batches.get(userId) ?? 2) + 1;
@@ -352,7 +386,7 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
           join[roomId] = {
             timeline: { events: bucket.timeline, limited: false, prev_batch: "b0" },
             ephemeral: { events: bucket.ephemeral },
-            state: { events: [] },
+            state: { events: bucket.state },
           };
         }
         return jsonRes({
@@ -475,6 +509,80 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
       return jsonRes({});
     }
 
+    // POST /createRoom — W5b: real room/space creation. Builds canonical
+    // initial state (create/name/topic/join_rules/PL/member), stores it in
+    // the room's state store and delivers it to the creator's next sync as a
+    // fresh rooms.join entry (js-sdk creates the Room from it).
+    if (path.endsWith("/createRoom") && method === "POST") {
+      const body = await bodyJson(init);
+      record("POST", path, body);
+      const roomId = `!c${eventSeq++}:hs.test`;
+      const mk = (type: string, key: string, content: Record<string, unknown>) => ({
+        type,
+        state_key: key,
+        sender: userId,
+        content,
+        room_id: roomId,
+        event_id: nextEventId(),
+        origin_server_ts: ++ts,
+      });
+      const creation = (body.creation_content ?? {}) as Record<string, unknown>;
+      const isPublic = body.visibility === "public" || body.preset === "public_chat";
+      const events: Record<string, unknown>[] = [
+        mk("m.room.create", "", { creator: userId, room_version: "11", ...creation }),
+        mk("m.room.power_levels", "", {
+          users: { [userId]: 100 },
+          users_default: 100,
+          state_default: 0,
+          events_default: 0,
+          notifications: { room: 100 },
+        }),
+        mk("m.room.member", userId, { membership: "join" }),
+        mk("m.room.join_rules", "", { join_rule: isPublic ? "public" : "invite" }),
+      ];
+      if (typeof body.name === "string") events.push(mk("m.room.name", "", { name: body.name }));
+      if (typeof body.topic === "string") events.push(mk("m.room.topic", "", { topic: body.topic }));
+      for (const s of (body.initial_state ?? []) as Record<string, unknown>[]) {
+        events.push(
+          mk(String(s.type ?? ""), String(s.state_key ?? ""), (s.content ?? {}) as Record<string, unknown>),
+        );
+      }
+      const store = roomState(roomId);
+      for (const e of events) store.set(`${String(e.type)}|${String(e.state_key)}`, e.content as Record<string, unknown>);
+      stateStores.set(roomId, store);
+      enqueue(userId, { roomId, initialState: events });
+      return jsonRes({ room_id: roomId });
+    }
+
+    // POST /rooms/{roomId}/leave — W5b: echo the leave membership back to the
+    // leaver (real HS behaviour) so their room list updates, and to everyone
+    // else via fanout.
+    const leaveM = path.match(/\/rooms\/([^/]+)\/leave$/);
+    if (leaveM && method === "POST") {
+      record("POST", path, await bodyJson(init));
+      const roomId = decodeURIComponent(leaveM[1]!);
+      const evLeave: FakeEventLike = {
+        type: "m.room.member",
+        sender: userId,
+        state_key: userId,
+        content: { membership: "leave" },
+        room_id: roomId,
+        event_id: nextEventId(),
+        origin_server_ts: ++ts,
+      };
+      enqueue(userId, { roomId, event: evLeave });
+      fanout(evLeave, userId);
+      return jsonRes({});
+    }
+
+    // POST /rooms/{roomId}/forget — record + benign {} (js-sdk drops the room
+    // from its local store on 200)
+    const forgetM = path.match(/\/rooms\/([^/]+)\/forget$/);
+    if (forgetM && method === "POST") {
+      record("POST", path, await bodyJson(init));
+      return jsonRes({});
+    }
+
     // GET/PUT /rooms/{roomId}/state/... — topic et al.
     const stateGet = path.match(/\/rooms\/([^/]+)\/state\/([^/]+)(?:\/([^/]*))?$/);
     if (stateGet) {
@@ -487,11 +595,11 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
         return jsonRes(s);
       }
       if (method === "PUT") {
-        record("PUT", path, await bodyJson(init));
         const content = await bodyJson(init);
+        record("PUT", path, content);
         roomState(roomId).set(`${type}|${key}`, content);
         const evId = nextEventId();
-        fanout({
+        const stEv: FakeEventLike = {
           type,
           sender: userId,
           state_key: key,
@@ -499,7 +607,11 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
           room_id: roomId,
           event_id: evId,
           origin_server_ts: ++ts,
-        });
+        };
+        // real HS echoes state back to the SENDER too (own-echo drives local
+        // room-state finalization; leave/createRoom do the same)
+        enqueue(userId, { roomId, event: stEv });
+        fanout(stEv, userId);
         return jsonRes({ event_id: evId });
       }
     }

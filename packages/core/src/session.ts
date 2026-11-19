@@ -1,4 +1,11 @@
-import { ClientEvent, NotificationCountType, PendingEventOrdering, SyncState, type MatrixClient } from "matrix-js-sdk";
+import {
+  ClientEvent,
+  EventType,
+  NotificationCountType,
+  PendingEventOrdering,
+  SyncState,
+  type MatrixClient,
+} from "matrix-js-sdk";
 import { createClientSession } from "./sdk.js";
 import {
   AccountStore,
@@ -14,6 +21,20 @@ export interface RoomSummary {
   isDM: boolean;
   unread: number;
   invite: boolean;
+  /** W5b: m.room.create room_type === "m.space" */
+  isSpace: boolean;
+  /** join | invite | leave | ban (summarize drops leave/ban) */
+  membership: string;
+  /** active m.space.child entries (state_key = child room id) */
+  spaceChildren: SpaceChildRef[];
+}
+
+export interface SpaceChildRef {
+  roomId: string;
+  /** m.space.child content.order (ASCII lexicographic per spec) */
+  order?: string;
+  /** origin_server_ts of the child event — ordering fallback */
+  ts: number;
 }
 
 export interface LoginCredentials {
@@ -207,14 +228,34 @@ function summarize(client: MatrixClient): RoomSummary[] {
   )("m.direct");
   const directMap = (directEvent?.getContent() ?? {}) as Record<string, string[]>;
   const direct = userId ? directMap[userId] ?? [] : [];
-  return client.getRooms().map((room) => {
+  const out: RoomSummary[] = [];
+  for (const room of client.getRooms()) {
     const membership = room.getMyMembership();
-    return {
+    // W5b: left/banned rooms must not linger in the list (settings/space leave)
+    if (membership === "leave" || membership === "ban") continue;
+    const spaceChildren = room.currentState
+      .getStateEvents(EventType.SpaceChild)
+      .map((e): SpaceChildRef | null => {
+        const c = e.getContent() as { order?: string; via?: unknown };
+        // spec: an m.space.child with no (or empty) "via" is a REMOVED link
+        if (!Array.isArray(c?.via) || c.via.length === 0) return null;
+        return {
+          roomId: e.getStateKey() ?? "",
+          order: typeof c.order === "string" ? c.order : undefined,
+          ts: e.getTs(),
+        };
+      })
+      .filter((c): c is SpaceChildRef => c !== null && c.roomId !== "");
+    out.push({
       roomId: room.roomId,
       name: room.name || room.roomId,
       isDM: direct.includes(room.roomId) || Boolean(room.getDMInviter()),
       unread: room.getUnreadNotificationCount(NotificationCountType.Total) ?? 0,
       invite: membership === "invite",
-    };
-  });
+      isSpace: room.isSpaceRoom(),
+      membership,
+      spaceChildren,
+    });
+  }
+  return out;
 }

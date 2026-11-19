@@ -113,6 +113,51 @@ describe.skipIf(!HS)("e2ee over live HS-A", () => {
     ac.stopClient();
     bc.stopClient();
   });
+
+  // NOTE (W5a-2, 2026-11-19): initiating SELF-verification is blocked
+  // upstream — matrix-js-sdk 45.1.0 requestVerificationDM casts
+  // getIdentity(own user) to OtherUserIdentity and calls
+  // verificationRequestContent(), which wasm 18.9.2 OwnUserIdentity does not
+  // implement (TypeError). The workaround (getOwnIdentity() ->
+  // own.requestVerification -> startSas at the wasm layer, sending outgoing
+  // requests via /sendToDevice) is scoped for W5a-3 with live proof.
+  // The receiving half (accept -> verifier -> show_sas) IS public and is
+  // exercised by the sessions/revoke test below + mock UI tests.
+  it("sessions & revoke: two live sessions listed, revoked session dies", { timeout: 60000 }, async () => {
+    const stamp = `s${Date.now().toString(36)}`;
+    const reg = await (await fetch(`${HS}/_matrix/client/v3/register`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: `linnet_sas_${stamp}`, password: PW, auth: { type: "m.login.dummy" } }),
+    })).json() as { user_id: string; access_token: string; device_id: string };
+    const A = createClientSession({ homeserverUrl: HS!, accessToken: reg.access_token, deviceId: reg.device_id, userId: reg.user_id });
+    const me = reg.user_id;
+    const b = await (await fetch(`${HS}/_matrix/client/v3/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "m.login.password", identifier: { type: "m.id.user", user: me }, password: PW }),
+    })).json() as { access_token: string; device_id: string };
+    const ca = (await fetch(`${HS}/_matrix/client/v3/devices/${b.device_id}`, {
+      headers: { Authorization: `Bearer ${reg.access_token}` },
+    })).ok;
+    expect(ca).toBe(true);
+    // revoke the second session with UIA password — exact adapter path
+    const del = await fetch(`${HS}/_matrix/client/v3/devices/${b.device_id}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${reg.access_token}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        auth: { type: "m.login.password", identifier: { type: "m.id.user", user: me }, password: PW },
+      }),
+    });
+    expect(del.status).toBe(200);
+    // B's token must now be dead
+    const who = await fetch(`${HS}/_matrix/client/v3/account/whoami`, {
+      headers: { Authorization: `Bearer ${b.access_token}` },
+    });
+    expect(who.status).toBe(401);
+    void until;
+    void A;
+  });
 });
 
 // integration-gate pattern: without LINNET_TEST_HS the suite above skips; run

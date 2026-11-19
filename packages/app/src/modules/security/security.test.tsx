@@ -19,7 +19,7 @@ import { App } from "../../App.js";
 import { setSessionManagerForTests } from "../../session-context.js";
 import { wizardInitial, wizardReduce, type WizardStep } from "./state.js";
 import { restoreInitial, restoreReduce, type RestoreStep } from "./state.js";
-import { SecuritySheet, SecurityBanner, type SecurityAdapter } from "./Security.js";
+import { SecuritySheet, SecurityBanner, type SecurityAdapter, type VerifyHandle } from "./Security.js";
 import type { SecurityStatus } from "./state.js";
 
 const ALICE = { userId: "@alice:hs.test", password: "pw-alice", accessToken: "tok-alice" };
@@ -84,8 +84,12 @@ describe("W5a restore reducer", () => {
 function mockAdapter(over: Partial<SecurityAdapter> = {}): SecurityAdapter & { calls: string[] } {
   const calls: string[] = [];
   let ready = false;
+  let incomingCb: ((h: VerifyHandle, request: unknown) => void) | null = null;
   const a: SecurityAdapter & { calls: string[] } = {
     calls,
+    get incoming() {
+      return incomingCb;
+    },
     async bootstrap() {
       calls.push("bootstrap");
       ready = true;
@@ -106,9 +110,53 @@ function mockAdapter(over: Partial<SecurityAdapter> = {}): SecurityAdapter & { c
     async runBackup() {
       calls.push("runBackup");
     },
+    async sessions() {
+      calls.push("sessions");
+      return [
+        { deviceId: "CUR", name: "this session", lastSeen: "today", ip: "10.0.0.1", verified: true, current: true },
+        { deviceId: "OLD", name: "old phone", lastSeen: "yesterday", ip: undefined, verified: false, current: false },
+      ];
+    },
+    async beginDeviceVerification(_c, id) {
+      calls.push(`verify:${id}`);
+      return fakeHandle();
+    },
+    async revoke(_c, id) {
+      calls.push(`revoke:${id}`);
+    },
+    onIncomingRequest(_c, cb) {
+      incomingCb = cb;
+      return () => {
+        incomingCb = null;
+      };
+    },
     ...over,
   };
   return a;
+}
+
+function fakeHandle(): VerifyHandle {
+  let settle: (r: "done" | "cancelled") => void = () => undefined;
+  const fin = new Promise<"done" | "cancelled">((res) => {
+    settle = res;
+  });
+  return {
+    entries: () =>
+      Promise.resolve([
+        { emoji: ["🐶"], description: "Dog" },
+        { emoji: ["🌳"], description: "Tree" },
+        { emoji: ["🎸"], description: "Guitar" },
+      ]),
+    confirm: () => {
+      settle("done");
+      return Promise.resolve();
+    },
+    cancel: () => {
+      settle("cancelled");
+      return Promise.resolve();
+    },
+    finished: () => fin,
+  };
 }
 
 const anyClient = { getUserId: () => ALICE.userId } as unknown as MatrixClient;
@@ -186,6 +234,61 @@ describe("W5a SecuritySheet", () => {
     await waitFor(() => expect((btn as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(btn);
     await waitFor(() => expect(adapter.calls).toContain("runBackup"));
+  });
+
+  it("sessions list: verified tags, verify button drives SAS to done", async () => {
+    const adapter = mockAdapter();
+    render(<SecuritySheet client={anyClient} adapter={adapter} onClose={() => undefined} />);
+    fireEvent.click(await screen.findByTestId("start-sessions"));
+    const row = await screen.findByTestId("session-OLD");
+    expect(row.textContent).toContain("unverified");
+    expect(screen.getByTestId("session-CUR").textContent).toContain("✓ verified");
+    fireEvent.click(screen.getByTestId("verify-OLD"));
+    expect(adapter.calls).toContain("verify:OLD");
+    await screen.findByTestId("sas-entries");
+    expect(document.querySelectorAll(".sas-emojis li")).toHaveLength(3);
+    fireEvent.click(screen.getByTestId("sas-match"));
+    await screen.findByTestId("sas-done");
+  });
+
+  it("SAS mismatch cancels", async () => {
+    const adapter = mockAdapter();
+    render(<SecuritySheet client={anyClient} adapter={adapter} onClose={() => undefined} />);
+    fireEvent.click(await screen.findByTestId("start-sessions"));
+    fireEvent.click(await screen.findByTestId("verify-OLD"));
+    await screen.findByTestId("sas-entries");
+    fireEvent.click(screen.getByTestId("sas-nomatch"));
+    await screen.findByTestId("sas-cancelled");
+  });
+
+  it("revoke asks for a password and calls the adapter", async () => {
+    const adapter = mockAdapter();
+    render(<SecuritySheet client={anyClient} adapter={adapter} onClose={() => undefined} />);
+    fireEvent.click(await screen.findByTestId("start-sessions"));
+    fireEvent.click(await screen.findByTestId("revoke-OLD"));
+    fireEvent.change(screen.getByTestId("revoke-pw-OLD"), { target: { value: "s3cret" } });
+    fireEvent.click(screen.getByTestId("revoke-go-OLD"));
+    await waitFor(() => expect(adapter.calls).toContain("revoke:OLD"));
+  });
+
+  it("incoming verification takes over the panel from any flow", async () => {
+    const adapter = mockAdapter();
+    render(<SecuritySheet client={anyClient} adapter={adapter} onClose={() => undefined} />);
+    await screen.findByTestId("security-status");
+    const cb = (adapter as unknown as { incoming: (h: VerifyHandle) => void }).incoming;
+    cb!(fakeHandle());
+    const panel = await screen.findByTestId("incoming-verify");
+    expect(panel.textContent).toContain("Compare");
+    await waitFor(() => expect(screen.getByTestId("sas-entries")).toBeTruthy());
+  });
+
+  it("current session has no revoke button", async () => {
+    const adapter = mockAdapter();
+    render(<SecuritySheet client={anyClient} adapter={adapter} onClose={() => undefined} />);
+    fireEvent.click(await screen.findByTestId("start-sessions"));
+    await screen.findByTestId("session-CUR");
+    expect(screen.queryByTestId("revoke-CUR")).toBeNull();
+    expect(screen.queryByTestId("verify-CUR")).toBeNull();
   });
 });
 

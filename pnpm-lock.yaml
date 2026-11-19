@@ -143,6 +143,9 @@ importers:
       '@linnet/core':
         specifier: workspace:*
         version: link:../core
+      matrix-js-sdk:
+        specifier: 45.1.0
+        version: 45.1.0
       react:
         specifier: ^18.3.1
         version: 18.3.1

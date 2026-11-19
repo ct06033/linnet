@@ -1,0 +1,393 @@
+/**
+ * RoomView: the middle pane orchestrator. Owns the live timeline, scroll
+ * policy, pagination, read receipts, typing display, undo-send window, and
+ * per-event action chrome. Content bodies render through registry
+ * timeline-item contributions (PRD §6.9).
+ */
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Direction,
+  EventType,
+  EventStatus,
+  RoomEvent,
+  RoomMemberEvent,
+  RoomStateEvent,
+  type EventTimeline,
+  type MatrixClient,
+  type MatrixEvent,
+  type Room,
+  type RoomState,
+} from "matrix-js-sdk";
+import type { ModuleRegistry, TimelineItemContribution } from "@linnet/core";
+import {
+  aggregateReactions,
+  bodyOf,
+  displayNameOf,
+  groupEvents,
+  kindOf,
+  latestEdits,
+  replyTargetId,
+} from "./model.js";
+import { Composer, type ComposerMode } from "./Composer.js";
+import type { TimelineItemProps } from "./renderers.js";
+
+export interface RoomViewProps {
+  client: MatrixClient;
+  roomId: string;
+  registry: ModuleRegistry | null;
+  undoGraceMs?: number;
+}
+
+export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomViewProps): JSX.Element {
+  const [tick, setTick] = useState(0);
+  const [mode, setMode] = useState<ComposerMode>({ kind: "send" });
+  const [lastAck, setLastAck] = useState<{ eventId: string; ts: number } | null>(null);
+  const [paginating, setPaginating] = useState(false);
+  const [joined, setJoined] = useState(true);
+  const scrollerRef = useRef<HTMLDivElement | null>(null);
+  const pinnedBottom = useRef(true);
+
+  const bump = useCallback(() => setTick((t) => t + 1), []);
+
+  useEffect(() => {
+    setMode({ kind: "send" });
+    setLastAck(null);
+    const room = client.getRoom(roomId);
+    setJoined(!room || room.getMyMembership() === "join");
+    const onTimeline = (ev: MatrixEvent, rm: Room | undefined): void => {
+      if (rm?.roomId === roomId) {
+        void ev;
+        bump();
+      }
+    };
+    const onUpdate = (state: RoomState): void => {
+      if (state?.roomId === roomId) bump();
+    };
+    const onTyping = (): void => bump();
+    const onEcho = (_event: MatrixEvent, _room: Room | undefined, _data?: unknown): void => bump();
+    client.on(RoomEvent.Timeline, onTimeline);
+    client.on(RoomStateEvent.Update, onUpdate);
+    client.on(RoomMemberEvent.Typing, onTyping);
+    client.on(RoomEvent.LocalEchoUpdated, onEcho);
+    return () => {
+      client.removeListener(RoomEvent.Timeline, onTimeline);
+      client.removeListener(RoomStateEvent.Update, onUpdate);
+      client.removeListener(RoomMemberEvent.Typing, onTyping);
+      client.removeListener(RoomEvent.LocalEchoUpdated, onEcho);
+    };
+  }, [client, roomId, bump]);
+
+  const room = client.getRoom(roomId);
+  const myUserId = client.getUserId();
+
+  const { rawEvents, events, pending } = useMemo(() => {
+    // COPY: js-sdk returns internal mutable arrays — same reference forever,
+    // which would poison downstream useMemo identity deps (learned the hard way)
+    const live = [...(room?.getLiveTimeline().getEvents() ?? [])];
+    const pend = [...(room?.getPendingEvents() ?? [])];
+    const remote = live.filter((e) => !isAnnotation(e) && !isReplace(e));
+    return { rawEvents: live, events: remote, pending: pend };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [room, tick]);
+
+  const eventsById = useMemo(() => {
+    const m = new Map<string, MatrixEvent>();
+    for (const e of [...events, ...pending]) if (e.getId()) m.set(e.getId()!, e);
+    return m;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [events, pending]);
+
+  const edits = useMemo(() => latestEdits([...rawEvents, ...pending]), [rawEvents, pending]);
+  const reactions = useMemo(() => aggregateReactions(rawEvents, myUserId), [rawEvents, myUserId]);
+  const groups = useMemo(() => groupEvents([...events, ...pending]), [events, pending]);
+
+  // undo window ticker
+  useEffect(() => {
+    if (!lastAck) return;
+    const t = setInterval(() => {
+      if (Date.now() - lastAck.ts > undoGraceMs) setLastAck(null);
+      else bump();
+    }, 500);
+    return () => clearInterval(t);
+  }, [lastAck, undoGraceMs, bump]);
+
+  // autoscroll + receipts
+  useEffect(() => {
+    const el = scrollerRef.current;
+    const last = events[events.length - 1];
+    if (el && last && pinnedBottom.current) {
+      el.scrollTop = el.scrollHeight;
+      if (last.getSender() !== myUserId) {
+        void client.sendReadReceipt(last).catch(() => undefined);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tick, roomId]);
+
+  function onScroll(): void {
+    const el = scrollerRef.current;
+    if (!el) return;
+    pinnedBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    if (el.scrollTop < 60 && !paginating && room?.getLiveTimeline().getPaginationToken(Direction.Backward)) {
+      void loadEarlier();
+    }
+  }
+
+  async function loadEarlier(): Promise<void> {
+    if (!room || paginating) return;
+    const tl = room.getLiveTimeline();
+    if (!tl.getPaginationToken(Direction.Backward)) return;
+    setPaginating(true);
+    try {
+      await client.paginateEventTimeline(tl, { backwards: true });
+    } catch {
+      /* token exhausted / offline — button stays */
+    } finally {
+      setPaginating(false);
+      bump();
+    }
+  }
+
+  async function react(target: MatrixEvent, key: string): Promise<void> {
+    const tid = target.getId();
+    if (!tid) return;
+    const mine = rawEvents.find(
+      (e) =>
+        isAnnotation(e) &&
+        e.getSender() === myUserId &&
+        ((e.getContent() as Record<string, unknown>)["m.relates_to"] as Record<string, unknown> | undefined)
+          ?.[
+            "event_id"
+        ] === tid &&
+        ((): boolean => {
+          const r = (e.getContent() as Record<string, unknown>)["m.relates_to"] as Record<string, unknown>;
+          return String(r["key"] ?? (e.getContent() as Record<string, unknown>)["value"] ?? "") === key;
+        })(),
+    );
+    try {
+      const mid = mine?.getId();
+      if (mid) await client.redactEvent(roomId, mid);
+      else {
+        await client.sendEvent(roomId, EventType.Reaction, {
+          "m.relates_to": { rel_type: "annotation", event_id: tid, key },
+        } as never);
+      }
+    } catch (err) {
+      console.warn("linnet: reaction failed", err);
+    }
+    bump();
+  }
+
+  // reactions live in the timeline; annotation lookup scans rawEvents
+
+  async function undoLast(): Promise<void> {
+    if (!lastAck) return;
+    try {
+      await client.redactEvent(roomId, lastAck.eventId);
+    } catch {
+      /* toast lands with W6 */
+    }
+    setLastAck(null);
+  }
+
+  if (!joined && room?.getMyMembership() === "invite") {
+    return (
+      <main className="roomview">
+        <div className="join-banner">
+          You were invited to this room.
+          <button
+            onClick={() => {
+              void client.joinRoom(roomId).then(bump).catch(() => undefined);
+            }}
+          >
+            Join
+          </button>
+        </div>
+      </main>
+    );
+  }
+
+  const topic = room?.currentState.getStateEvents(EventType.RoomTopic, "")?.getContent()?.topic as
+    | string
+    | undefined;
+  const e2ee = room?.hasEncryptionStateEvent() ?? false;
+
+  return (
+    <main className="roomview" data-testid="roomview">
+      <header className="room-header">
+        <div className="title">
+          <span className="room-name">{room?.name ?? roomId}</span>
+          {e2ee && <span className="e2ee-badge" title="Encrypted">🔒</span>}
+        </div>
+        <div className="sub">
+          {topic && <span className="topic">{topic}</span>}
+          <span className="members">{room?.getJoinedMemberCount?.() ?? 0} members</span>
+        </div>
+      </header>
+
+      <div className="scroller" ref={scrollerRef} onScroll={onScroll}>
+        {(() => {
+          const token = room?.getLiveTimeline().getPaginationToken(Direction.Backward);
+          const tlType: EventTimeline | null = room?.getLiveTimeline() ?? null;
+          void tlType;
+          return token ? (
+            <button onClick={() => void loadEarlier()} disabled={paginating}>
+              {paginating ? "loading…" : "Load earlier messages"}
+            </button>
+          ) : null;
+        })()}
+        {groups.map((g, gi) => (
+          <div className="group" key={`${g.sender}-${gi}`}>
+            {g.events.map((ev, ei) => {
+              const kind = kindOf(ev);
+              const firstInGroup = ei === 0 && kind !== "system" && kind !== "redacted";
+              const contrib = registry
+                ?.list("timeline-item")
+                .find((c: TimelineItemContribution) => c.kind === kind);
+              const editEv = ev.getId() ? edits.get(ev.getId()!) : undefined;
+              const replyTo = replyTargetId(ev);
+              const parent = replyTo ? eventsById.get(replyTo) : undefined;
+              const props: TimelineItemProps = {
+                ev,
+                client,
+                myUserId,
+                edited: Boolean(editEv),
+                editContent: editEv?.getContent()?.["m.new_content"] as Record<string, unknown> | undefined,
+                replyTarget: parent
+                  ? { senderName: shortName(parent.getSender() ?? "?"), body: bodyOf(parent) }
+                  : null,
+                reactions: (ev.getId() && reactions.get(ev.getId()!)) || [],
+                onReact: (t, k) => void react(t, k),
+              };
+              const failed = ev.status === EventStatus.NOT_SENT;
+              const sending = ev.status === EventStatus.SENDING || ev.status === EventStatus.QUEUED;
+              return (
+                <div
+                  className={`row${firstInGroup ? " head" : ""}${kind === "system" ? " system" : ""}`}
+                  key={ev.getId() ?? `p${gi}${ei}`}
+                  data-status={sending ? "sending" : failed ? "failed" : undefined}
+                >
+                  {firstInGroup && (
+                    <div className="who">
+                      <span className="avatar">{shortName(ev.getSender() ?? "?").slice(0, 2).toUpperCase()}</span>
+                      <strong>{displayNameOf(client, ev.getSender() ?? "?")}</strong>
+                      <time>{formatTs(ev.getTs())}</time>
+                    </div>
+                  )}
+                  <div className="content">
+                    {contrib ? (contrib.render(props) as JSX.Element) : <em className="muted">{kind}</em>}
+                    {sending && <span className="send-hint">sending…</span>}
+                    {failed && (
+                      <span className="send-fail">
+                        failed{" "}
+                        <button
+                          aria-label="Retry"
+                          onClick={() => {
+                            if (room) void client.resendEvent(ev, room).then(bump).catch(() => undefined);
+                          }}
+                        >
+                          Retry
+                        </button>
+                        <button
+                          aria-label="Cancel"
+                          onClick={() => {
+                            client.cancelPendingEvent(ev);
+                            bump();
+                          }}
+                        >
+                          ✕
+                        </button>
+                      </span>
+                    )}
+                  </div>
+                  {kind !== "system" && kind !== "redacted" && kind !== "utd" && (
+                    <div className="actions" role="toolbar" aria-label="Message actions">
+                      <button aria-label="Reply" onClick={() => setMode({ kind: "reply", ev })}>↩</button>
+                      {ev.getSender() === myUserId && kind === "text" && (
+                        <button
+                          aria-label="Edit"
+                          onClick={() => {
+                            const newText = props.editContent?.["body"] ?? bodyOf(ev);
+                            setMode({ kind: "edit", ev, text: String(newText) });
+                          }}
+                        >
+                          ✎
+                        </button>
+                      )}
+                      {ev.getSender() === myUserId && (
+                        <button
+                          aria-label="Delete"
+                          onClick={() => {
+                            const id = ev.getId();
+                            if (id) void client.redactEvent(roomId, id).then(bump).catch(() => undefined);
+                          }}
+                        >
+                          🗑
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        ))}
+        {events.length === 0 && pending.length === 0 && (
+          <p className="placeholder">This room has no messages yet.</p>
+        )}
+      </div>
+
+      <div className="typing-line" aria-live="polite">
+        {(() => {
+          const ids = room
+            ? Object.values(room.getJoinedMembers())
+                .filter((m) => m.typing && m.userId !== myUserId)
+                .map((m) => m.userId)
+            : [];
+          return ids.length > 0
+            ? `${ids.map(shortName).join(", ")} ${ids.length === 1 ? "is" : "are"} typing…`
+            : null;
+        })()}
+      </div>
+
+      {lastAck && Date.now() - lastAck.ts <= undoGraceMs && (
+        <div className="undo-bar" data-testid="undo-bar">
+          Sent ·{" "}
+          <button onClick={() => void undoLast()} aria-label="Undo send">
+            Undo
+          </button>
+        </div>
+      )}
+
+      <Composer
+        client={client}
+        roomId={roomId}
+        registry={registry}
+        mode={mode}
+        onModeReset={() => setMode({ kind: "send" })}
+        onAck={(eventId) => setLastAck({ eventId, ts: Date.now() })}
+        myUserId={myUserId}
+      />
+    </main>
+  );
+
+  // eslint hint: allEvents referenced via closure in react()
+  function isAnnotation(ev: MatrixEvent): boolean {
+    return ev.getType() === EventType.Reaction || kindOf(ev) === "reaction";
+  }
+  function isReplace(ev: MatrixEvent): boolean {
+    const rel = (ev.getContent() as Record<string, unknown>)["m.relates_to"] as
+      | Record<string, unknown>
+      | undefined;
+    return rel?.["rel_type"] === "replace";
+  }
+}
+
+function shortName(userId: string): string {
+  return userId.split(":")[0]?.replace(/^@/, "") ?? userId;
+}
+
+function formatTs(ts: number): string {
+  const d = new Date(ts);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}

@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "module": "CommonJS",
+    "moduleResolution": "Node10",
+    "target": "ES2022",
+    "lib": [
+      "ES2022"
+    ],
+    "strict": true,
+    "outDir": "dist-electron",
+    "rootDir": "src",
+    "skipLibCheck": true,
+    "types": [
+      "node"
+    ],
+    "esModuleInterop": true
+  },
+  "include": [
+    "src"
+  ]
+}

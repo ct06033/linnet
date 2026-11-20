@@ -626,6 +626,11 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
       record("PUT", path, await bodyJson(init));
       return jsonRes({});
     }
+    // P1 moderation: POST /rooms/{}/report/{eventId}
+    if (/\/report\//.test(path) && method === "POST") {
+      record("POST", path, await bodyJson(init));
+      return jsonRes({});
+    }
     if (/\/rooms\/[^/]+\/typing\/[^/]+$/.test(path) && method === "PUT") {
       record("PUT", path, await bodyJson(init));
       return jsonRes({});

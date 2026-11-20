@@ -40,6 +40,8 @@ export interface FakeRoom {
   members?: Record<string, string>;
   /** newest-last seed timeline */
   events?: FakeEventLike[];
+  /** W15 2b: extra raw state events (type/state_key/content[/sender]) merged into room state */
+  state?: { type: string; state_key: string; content: Record<string, unknown>; sender?: string }[];
   /** older history returned by /messages back-pagination */
   old?: FakeEventLike[];
   /** W5b: seed m.room.create with room_type m.space */
@@ -206,6 +208,9 @@ export function makeSyncSnapshot(opts: {
     }
     if (r.pinned?.length) {
       out.push(ev(roomId, "m.room.pinned_events", { pinned: r.pinned }, { state_key: "" }));
+    }
+    for (const s of r.state ?? []) {
+      out.push(ev(roomId, s.type, s.content, { state_key: s.state_key, event_id: `$seed-${s.type}-${s.state_key}:${roomId}`, ...(s.sender ? { sender: s.sender } : {}) }));
     }
     // W5b: m.space.child links (state_key = child room id; via required to be active)
     for (const [childId, c] of Object.entries(r.children ?? {})) {
@@ -472,6 +477,21 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
         access_token: hit.accessToken,
         device_id: hit.deviceId ?? "FAKEDEV",
         user_id: hit.userId,
+      });
+    }
+
+    // W15 2b: OpenID token mint for embedded widgets (client.getOpenIdToken
+    // POSTs /user/{userId}/loginToken; Element Call then trades it at the
+    // LiveKit service's same-origin /get_token).
+    if (/\/user\/[^/]+\/loginToken$/.test(path) && method === "POST") {
+      if (!account || loggedOut.has(account.accessToken)) {
+        return jsonRes({ errcode: "M_UNKNOWN_TOKEN", error: "unknown token" }, 401);
+      }
+      return jsonRes({
+        access_token: `openid-${account.userId.replace(/[^a-z0-9]/gi, "")}-fake`,
+        token_type: "Bearer",
+        expires_in: 3600000,
+        matrix_server_name: "hs.test",
       });
     }
 

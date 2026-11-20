@@ -48,6 +48,8 @@ export interface FakeRoom {
   children?: Record<string, { order?: string; via?: string[] }>;
   /** W14 item 11: mxc URI seeded into m.room.avatar state */
   avatar?: string;
+  /** P1 pinning: event ids seeded into m.room.pinned_events state */
+  pinned?: string[];
   /** W14 item 6: initial room tags for the snapshot user (tagName -> meta) */
   tags?: Record<string, unknown>;
   /** W5b: replace the default m.room.power_levels content (PL-gating tests) */
@@ -197,6 +199,9 @@ export function makeSyncSnapshot(opts: {
     }
     if (r.avatar) {
       out.push(ev(roomId, "m.room.avatar", { url: r.avatar }, { state_key: "" }));
+    }
+    if (r.pinned?.length) {
+      out.push(ev(roomId, "m.room.pinned_events", { pinned: r.pinned }, { state_key: "" }));
     }
     // W5b: m.space.child links (state_key = child room id; via required to be active)
     for (const [childId, c] of Object.entries(r.children ?? {})) {

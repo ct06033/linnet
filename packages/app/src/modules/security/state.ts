@@ -107,11 +107,74 @@ export function restoreReduce(state: RestoreStep, ev: RestoreEvent): RestoreStep
 }
 
 // ---------------------------------------------------------------------------
+// W14 unlock-session machine (SSSS account, locked device): mirrors the
+// RestoreStep style — route -> input(passphrase|key) -> working -> progress
+// -> done(imported) | error(message) + retry/again.
+
+export type UnlockStep =
+  | { step: "route" }
+  | { step: "input"; route: "passphrase" | "key"; value: string }
+  | { step: "working"; route: "passphrase" | "key"; value: string }
+  | { step: "progress"; route: "passphrase" | "key"; value: string; total?: number; imported?: number }
+  | { step: "done"; imported: number }
+  | { step: "error"; message: string; back: UnlockStep };
+
+export type UnlockEvent =
+  | { t: "pick"; route: "passphrase" | "key" }
+  | { t: "value"; value: string }
+  | { t: "submit" }
+  | { t: "progress"; total?: number; imported?: number }
+  | { t: "done"; imported: number }
+  | { t: "fail"; message: string }
+  | { t: "retry" }
+  | { t: "again" };
+
+export const unlockInitial: UnlockStep = { step: "route" };
+
+export function unlockReduce(state: UnlockStep, ev: UnlockEvent): UnlockStep {
+  switch (ev.t) {
+    case "pick":
+      return state.step === "route" ? { step: "input", route: ev.route, value: "" } : state;
+    case "value":
+      return state.step === "input" ? { ...state, value: ev.value } : state;
+    case "submit":
+      return state.step === "input" && state.value.length > 0
+        ? { step: "working", route: state.route, value: state.value }
+        : state;
+    case "progress":
+      return state.step === "working" || state.step === "progress"
+        ? {
+            step: "progress",
+            route: (state as { route: "passphrase" | "key" }).route,
+            value: (state as { value: string }).value,
+            total: ev.total,
+            imported: ev.imported,
+          }
+        : state;
+    case "done":
+      return state.step === "working" || state.step === "progress" ? { step: "done", imported: ev.imported } : state;
+    case "fail":
+      return { step: "error", message: ev.message, back: state };
+    case "retry":
+      return state.step === "error" && state.back.step === "working"
+        ? { step: "working", route: state.back.route, value: state.back.value }
+        : state;
+    case "again":
+      return unlockInitial;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Account status probe (duck-typed so jsdom tests never touch rust crypto).
 
 export interface SecurityStatus {
   cryptoAvailable: boolean;
   ready: boolean | null; // cross-signing + 4S + backup all on
+  /** W14: account ALREADY has Secure Secret Storage (Element or another
+   *  session set it up) — a locked session must UNLOCK, not re-bootstrap. */
+  ssssReady: boolean;
+  /** W14: this session holds a usable cross-signing identity */
+  crossSigningReady: boolean;
   backupEnabled: boolean;
   backupCount: number | null;
 }
@@ -137,9 +200,14 @@ export async function probeStatus(
 ): Promise<SecurityStatus> {
   const crypto = client.getCrypto?.() ?? null;
   if (!crypto) {
-    return { cryptoAvailable: false, ready: null, backupEnabled: false, backupCount: null };
+    return {
+      cryptoAvailable: false, ready: null, ssssReady: false, crossSigningReady: false,
+      backupEnabled: false, backupCount: null,
+    };
   }
   let ready: boolean | null = null;
+  let ssssReady = false;
+  let crossSigningReady = false;
   let backupEnabled = false;
   try {
     const [xsign, ssss, info] = await Promise.all([
@@ -147,6 +215,8 @@ export async function probeStatus(
       crypto.isSecretStorageReady(),
       crypto.getKeyBackupInfo(),
     ]);
+    crossSigningReady = Boolean(xsign);
+    ssssReady = Boolean(ssss);
     backupEnabled = Boolean(info);
     ready = Boolean(xsign && ssss && info);
   } catch {
@@ -164,7 +234,7 @@ export async function probeStatus(
   } catch {
     backupCount = null;
   }
-  return { cryptoAvailable: true, ready, backupEnabled, backupCount };
+  return { cryptoAvailable: true, ready, ssssReady, crossSigningReady, backupEnabled, backupCount };
 }
 
 const KEY_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";

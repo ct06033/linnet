@@ -117,4 +117,35 @@ describe("W12a sync-error surfacing", () => {
     expect(await screen.findByText(/create or join/, {}, { timeout: 20000 })).toBeTruthy();
     expect(screen.queryByText("waiting for first sync…")).toBeNull();
   });
+
+  it("sync errors surface in a banner even when the account HAS cached rooms (restart-stale case)", async () => {
+    // First /sync answers normally (rooms land in the store), every later
+    // /sync 401s — the exact "logged in previously, now silently stale"
+    // shape. The banner must appear with role=alert even with rooms listed.
+    let firstSync = true;
+    const base = createFakeHomeserver({
+      accounts: [ALICE],
+      sync: (userId) => makeSyncSnapshot({ userId, rooms: [{ roomId: "!a1:hs.test", name: "linnet-dev" }] }),
+    });
+    const flaky = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (/\/sync(\?|$)/.test(url)) {
+        if (firstSync) {
+          firstSync = false;
+          return base(input, init);
+        }
+        return new Response(JSON.stringify({ errcode: "M_UNKNOWN_TOKEN", error: "Unrecognised token", soft_logout: false }), {
+          status: 401,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return base(input, init);
+    }) as unknown as typeof globalThis.fetch;
+    setSessionManagerForTests(new SessionManager({ kv: new MemoryKv(), secrets: new MemorySecrets(), fetchFn: flaky }));
+    render(<App />);
+    await signIn();
+    await screen.findByText("linnet-dev", { selector: ".roomlist .name" });
+    const alert = await screen.findByRole("alert", {}, { timeout: 20000 });
+    expect(alert.textContent).toMatch(/rejected|sync problem/i);
+  });
 });

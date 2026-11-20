@@ -408,6 +408,19 @@ export function App(): ReactNode {
       </aside>
 
       <main className="timeline" id="linnet-main">
+        {/* W12 restart-sync gap: sync errors must be VISIBLE even when the
+            account has cached rooms — the old placeholder-only surface left
+            restored sessions silently stale ("logged in but never syncs"). */}
+        {syncStatus?.phase === "error" && (
+          <div className="sync-banner" role="alert">
+            {syncStatus.fatal
+              ? `sync failed: ${syncStatus.message} — your session was rejected, sign in again (account menu)`
+              : `sync problem: ${syncStatus.message} — retrying…`}{" "}
+            {!syncStatus.fatal && (
+              <button onClick={() => sm.retrySync()}>retry now</button>
+            )}
+          </div>
+        )}
         {selectedRoom && clientForView ? (
           <RoomView client={clientForView} roomId={selectedRoom} registry={registry} />
         ) : (
@@ -420,16 +433,7 @@ export function App(): ReactNode {
               {rooms.length > 0
                 ? "pick a room — timeline is live"
                 : syncStatus?.phase === "error"
-                  ? (
-                      <>
-                        {syncStatus.fatal
-                          ? `sync failed: ${syncStatus.message} — your session was rejected, sign in again (account menu)`
-                          : `sync problem: ${syncStatus.message} — retrying…`}{" "}
-                        {!syncStatus.fatal && (
-                          <button onClick={() => sm.retrySync()}>retry now</button>
-                        )}
-                      </>
-                    )
+                  ? "see the sync banner above"
                   : syncStatus?.phase === "prepared"
                     ? // W12 smoke finding: a brand-new account has zero rooms — the old
                       // copy faked a permanent "sync hang". Sync IS done; act.

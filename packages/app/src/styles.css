@@ -132,6 +132,9 @@ main.roomview { display: flex; flex-direction: column; height: 100%; min-height:
 /* W12 item 13: plain text button — no box, no border, reads as a link */
 .load-earlier { display: block; margin: 2px auto 6px; border: 0; background: transparent; color: var(--accent-link, var(--accent, #4f6bed)); font: inherit; font-size: 13px; cursor: pointer; padding: 2px 6px; border-radius: 4px; }
 .load-earlier:hover { text-decoration: underline; }
+/* W12: sync errors are ALWAYS visible (banner lives above RoomView too, not just in the empty placeholder). */
+.sync-banner { padding: 8px 14px; background: color-mix(in srgb, var(--err-fg, #d64545) 14%, var(--bg-elev, #16161c)); color: var(--err-fg, #d64545); border-bottom: 1px solid color-mix(in srgb, var(--err-fg, #d64545) 35%, transparent); font-size: 13px; }
+.sync-banner button { margin-left: 6px; font: inherit; color: inherit; background: transparent; border: 1px solid currentColor; border-radius: 4px; padding: 1px 8px; cursor: pointer; }
 .load-earlier:disabled { opacity: .6; cursor: default; }
 .earlier { text-align: center; padding: 4px 0; }
 .group { margin-bottom: 2px; }

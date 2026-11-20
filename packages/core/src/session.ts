@@ -41,6 +41,8 @@ export interface RoomSummary {
   avatarUrl?: string;
   /** W14 item 6: standard Matrix "m.favourite" room tag (Element-interop) */
   favourite: boolean;
+  /** P1 sorts: origin_server_ts of the newest loaded event (0 = none) */
+  lastTs: number;
 }
 
 export interface SpaceChildRef {
@@ -710,6 +712,10 @@ function summarize(client: MatrixClient): RoomSummary[] {
       // room.addAccountData with an m.tag event feeds it), so SessionManager
       // folds the raw sync data in via applyTagEvents() before summarizing.
       favourite: Boolean(room.tags?.["m.favourite"]),
+      lastTs: (() => {
+        const live = room.getLiveTimeline().getEvents();
+        return live.length ? live[live.length - 1]!.getTs() : 0;
+      })(),
     });
   }
   return out;

@@ -591,3 +591,27 @@ button.section-toggle {
   border-radius: 8px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
 .pdf-bar button:hover { color: var(--fg); border-color: var(--accent); }
 .pdf-viewer iframe { width: min(900px, 92vw); height: min(78vh, 900px); border: 0; border-radius: 10px; background: #fff; }
+
+
+/* P1 search / jump-to-date panel */
+.search-btn { border: none; background: transparent; font-size: 15px; cursor: pointer; opacity: 0.75; }
+.search-btn:hover { opacity: 1; }
+.search-panel input[type="search"], .search-panel input[type="date"] {
+  background: var(--bg-input); color: var(--fg); border: 1px solid var(--border);
+  border-radius: 8px; padding: 7px 9px; font: inherit; font-size: 13px;
+}
+.search-date-row { display: flex; gap: 8px; align-items: center; }
+.search-date-row button {
+  border: 1px solid var(--border); background: var(--bg-elev); color: var(--fg);
+  border-radius: 8px; padding: 6px 10px; font-size: 12px; cursor: pointer; white-space: nowrap;
+}
+.search-date-row button:disabled { opacity: 0.5; cursor: default; }
+.search-results { display: flex; flex-direction: column; gap: 6px; max-height: 60vh; overflow-y: auto; }
+.search-hit {
+  display: flex; flex-direction: column; gap: 2px; text-align: left; cursor: pointer;
+  background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px; padding: 7px 10px; color: var(--fg);
+}
+.search-hit:hover { border-color: var(--accent); }
+.sh-meta { font-size: 11px; color: var(--fg-dim); }
+.sh-body { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.search-hit mark { background: color-mix(in srgb, var(--accent) 35%, transparent); color: inherit; border-radius: 3px; }

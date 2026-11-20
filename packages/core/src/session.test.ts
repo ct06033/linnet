@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createFakeHomeserver, makeSyncSnapshot } from "./fake-homeserver.js";
 import { ACCOUNTS_KV_KEY, MemoryKv, MemorySecrets, secretKeyFor } from "./accounts.js";
-import { SessionManager, type RoomSummary, type SyncStatus } from "./session.js";
+import { SessionManager, cryptoDbPrefixFor, ensureCrypto, type RoomSummary, type SyncStatus } from "./session.js";
 
 const ALICE = { userId: "@alice:hs.test", password: "pw-alice", accessToken: "tok-alice" };
 const BOB = { userId: "@bob:hs.test", password: "pw-bob", accessToken: "tok-bob" };
@@ -303,5 +303,71 @@ describe("W12a first-sync lifecycle", () => {
     // after the fatal status nothing further may flip to non-fatal error states
     expect(statuses.slice(atFatal).every((s) => s.phase !== "error" || s.fatal)).toBe(true);
     sm.stopAll();
+  });
+
+  // W16 bug (Sean's login failure): js-sdk's default rust-crypto IndexedDB
+  // store ("matrix-js-sdk") holds ONE account key per origin. Re-login after
+  // logout gets a NEW device_id, and OlmMachine threw "the account in the
+  // store doesn't match the account in the constructor". Fix: per-(user,
+  // device) cryptoDatabasePrefix + deleteDatabase on logout.
+  describe("crypto IndexedDB store isolation", () => {
+    it("cryptoDbPrefixFor gives every device its own store name", () => {
+      const a = cryptoDbPrefixFor("@sean:hs.test", "YNYDCPPAMU");
+      const b = cryptoDbPrefixFor("@sean:hs.test", "TMXQDNYUGN"); // re-login = new device
+      expect(a).not.toBe(b);
+      expect(cryptoDbPrefixFor("@sean:hs.test", "YNYDCPPAMU")).toBe(a); // stable for restore
+      expect(cryptoDbPrefixFor("@bob:hs.test", "YNYDCPPAMU")).not.toBe(a); // multi-account
+    });
+
+    it("ensureCrypto passes the per-account prefix when IndexedDB exists, memory-store otherwise", async () => {
+      const seen: unknown[] = [];
+      const fakeClient = {
+        getCrypto: () => null,
+        getUserId: () => ALICE.userId,
+        getDeviceId: () => "AAAA",
+        initRustCrypto: async (args: unknown) => void seen.push(args),
+      } as never;
+      const g = globalThis as { indexedDB?: unknown };
+      const had = g.indexedDB;
+      try {
+        g.indexedDB = {}; // presence check only — wasm store never opened here
+        await ensureCrypto(fakeClient);
+        expect(seen[0]).toEqual({ useIndexedDB: true, cryptoDatabasePrefix: cryptoDbPrefixFor(ALICE.userId, "AAAA") });
+        delete g.indexedDB;
+        await ensureCrypto(fakeClient);
+        expect(seen[1]).toEqual({ useIndexedDB: false });
+      } finally {
+        g.indexedDB = had;
+      }
+    });
+
+    it("logout deletes the account's crypto DB (and does not hang on silent requests)", async () => {
+      const deleted: string[] = [];
+      const g = globalThis as { indexedDB?: unknown };
+      const had = g.indexedDB;
+      try {
+        g.indexedDB = {
+          deleteDatabase: (name: string) => {
+            deleted.push(name);
+            // fire onsuccess when our code assigns the handler (plain prop setters can't be watched otherwise)
+            return {
+              set onsuccess(fn: () => void) {
+                fn();
+              },
+              set onerror(fn: () => void) {
+                fn();
+              },
+            };
+          },
+        };
+        const sm = mkManager();
+        await sm.login({ homeserverUrl: "https://hs.test", username: ALICE.userId, password: ALICE.password });
+        await sm.logout(aliceId);
+        expect(deleted).toEqual([cryptoDbPrefixFor(ALICE.userId, "FAKEDEV")]);
+        expect(await sm.listAccounts()).toHaveLength(0);
+      } finally {
+        g.indexedDB = had;
+      }
+    });
   });
 });

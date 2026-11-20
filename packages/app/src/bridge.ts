@@ -23,6 +23,8 @@ declare global {
       secrets?: SecretBridge;
       setBadge?(count: number): Promise<void>;
       openExternal?(url: string): void;
+      /** P1 URL previews: main-process HTML fetch (no CORS/cookies in renderer). */
+      fetchUrl?(url: string): Promise<{ ok: boolean; status: number; html: string | null } | null>;
     };
   }
 }

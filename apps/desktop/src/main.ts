@@ -148,6 +148,24 @@ if (!gotLock) {
   ipcMain.handle("linnet:secret:load", (_e, key: string) => secretLoad(key));
   ipcMain.handle("linnet:secret:remove", (_e, key: string) => secretRemove(key));
   // W9: unread badge (Linux docks/Unity; no-op elsewhere) + external opens
+  // P1 URL previews: fetch page HTML from the MAIN process (no renderer CORS,
+  // no user cookies). https/http only, 8s budget, 400KB cap, html content-type.
+  ipcMain.handle("linnet:fetch-url", async (_e, url: string) => {
+    try {
+      const u = new URL(String(url));
+      if (u.protocol !== "https:" && u.protocol !== "http:") return null;
+      const res = await fetch(u.toString(), {
+        redirect: "follow",
+        signal: AbortSignal.timeout(8000),
+        headers: { "User-Agent": "LinnetPreview/1.0 (Matrix client; +https://github.com/ct06033/linnet)", Accept: "text/html,*/*" },
+      });
+      const ctype = res.headers.get("content-type") ?? "";
+      const html = res.ok && /text\/html|application\/xhtml|x-html/.test(ctype) ? (await res.text()).slice(0, 400_000) : null;
+      return { ok: res.ok, status: res.status, html };
+    } catch {
+      return null;
+    }
+  });
   ipcMain.handle("linnet:badge", (_e, count: number) => {
     try {
       app.setBadgeCount(Math.max(0, Math.floor(count)));

@@ -128,7 +128,8 @@ describe("transport discovery + widget lifecycle over fake HS", () => {
   });
 });
 
-// ── host widget driver (App-Widgets envelope contract) ─────────────────────
+// ── host widget driver v2 (real matrix-widget-api PostmessageTransport shape:
+//    {api:"fromWidget", widgetId, requestId, action, data} / respond:true) ───
 describe("widgetHost driver", () => {
   const widgetId = widgetIdFor(ROOM);
 
@@ -142,9 +143,26 @@ describe("widgetHost driver", () => {
     return { el, posted };
   }
 
-  function fakeClient(): { client: MatrixClient; sent: unknown[]; states: unknown[] } {
+  function fakeMemberEvent(sender: string, key: string, content: unknown) {
+    return {
+      getType: () => "m.call.member",
+      getStateKey: () => key,
+      getSender: () => sender,
+      getContent: () => content,
+    };
+  }
+
+  function fakeClient(opts: { members?: unknown[] } = {}): {
+    client: MatrixClient;
+    sent: unknown[];
+    states: unknown[];
+    devices: unknown[];
+    stateHandlers: Array<(ev: unknown, st?: { roomId?: string }) => void>;
+  } {
     const sent: unknown[] = [];
     const states: unknown[] = [];
+    const devices: unknown[] = [];
+    const stateHandlers: Array<(ev: unknown, st?: { roomId?: string }) => void> = [];
     const client = {
       sendEvent: async (r: string, t: string, c: unknown) => {
         sent.push([r, t, c]);
@@ -154,63 +172,195 @@ describe("widgetHost driver", () => {
         states.push([r, t, c, k]);
         return { event_id: "$st1" };
       },
+      sendToDevice: async (t: string, m: unknown) => {
+        devices.push([t, m]);
+        return {};
+      },
+      getOpenIdToken: async () => ({
+        access_token: "openid-alice-fake",
+        token_type: "Bearer",
+        expires_in: 3600000,
+        matrix_server_name: "hs.test",
+      }),
+      getRoom: () => ({
+        currentState: {
+          getStateEvents: (type: string) => (type === "m.call.member" ? (opts.members ?? []) : []),
+        },
+      }),
+      on: (_ev: string, fn: (e: unknown, st?: { roomId?: string }) => void) => {
+        stateHandlers.push(fn);
+      },
+      off: (_ev: string, fn: (e: unknown) => void) => {
+        const i = stateHandlers.indexOf(fn as never);
+        if (i >= 0) stateHandlers.splice(i, 1);
+      },
+      http: {
+        authedRequest: async () => ({ transports: [{ type: "livekit", livekit_service_url: SERVICE }] }),
+      },
     } as unknown as MatrixClient;
-    return { client, sent, states };
+    return { client, sent, states, devices, stateHandlers };
   }
 
-  function widgetMsg(data: Record<string, unknown>): MessageEvent {
+  let reqSeq = 0;
+  function widgetMsg(action: string, data: Record<string, unknown> = {}, fromWidget = true): MessageEvent {
     return new MessageEvent("message", {
-      data: { api: "w", sender: "widget", widgetId, ...data },
+      data: { api: fromWidget ? "fromWidget" : "widget_api", widgetId, requestId: `wreq-${++reqSeq}`, action, data },
       origin: SERVICE,
     });
   }
+  function replyFor(posted: Record<string, unknown>[], requestId: string): Record<string, unknown> | undefined {
+    return posted.find((p) => p.requestId === requestId);
+  }
+  function ask(el: { posted: Record<string, unknown>[] }, action: string, data: Record<string, unknown>): MessageEvent {
+    const msg = widgetMsg(action, data);
+    const requestId = ((msg.data as Record<string, unknown>).requestId as string);
+    (el as unknown as { ids?: string[] }).ids?.push(requestId);
+    lastReqId = requestId;
+    window.dispatchEvent(msg);
+    return msg;
+  }
+  let lastReqId = "";
 
   it("answers the version handshake and posts widget_api_request on start", () => {
     const { el, posted } = fakeIframe();
     const { client } = fakeClient();
     const host = startWidgetHost({ client, roomId: ROOM, widgetId, iframe: el, origin: SERVICE });
     expect(posted.some((p) => p.action === "widget_api_request")).toBe(true);
-    window.dispatchEvent(widgetMsg({ action: "widget_api_response", requestId: "x", data: { supported: [] } }));
+    window.dispatchEvent(widgetMsg("widget_api_response", {}, false));
     host.stop();
   });
 
-  it("relays sendStateEvent (m.call.member) and echoes the jsonrpc id", () => {
-    const { el, posted } = fakeIframe();
-    const { client, states } = fakeClient();
-    startWidgetHost({ client, roomId: ROOM, widgetId, iframe: el, origin: SERVICE });
-    window.dispatchEvent(
-      widgetMsg({
-        jsonrpc: "2.0",
-        id: "42",
-        method: "sendStateEvent",
-        params: { type: "m.call.member", state_key: "", content: { membership: { "dummy": {} } } },
-      }),
-    );
-    return waitFor(() => {
-      expect(states).toHaveLength(1);
-      expect((states[0] as [string, string])[1]).toBe("m.call.member");
-      const ack = posted.find((p) => p.id === "42");
-      expect(ack).toBeTruthy();
-      expect((ack as { result: { event_id: string } }).result.event_id).toBe("$st1");
-      expect(ack!.sender).toBe("host");
-    });
-  });
-
-  it("rejects unknown methods and ignores foreign widget ids", () => {
+  it("supported_api_versions: advertises 2762/2974/4515, NOT msc4533/msc3846", () => {
     const { el, posted } = fakeIframe();
     const { client } = fakeClient();
     startWidgetHost({ client, roomId: ROOM, widgetId, iframe: el, origin: SERVICE });
-    window.dispatchEvent(widgetMsg({ jsonrpc: "2.0", id: "9", method: "teleport", params: {} }));
+    ask({ posted }, "supported_api_versions", {});
+    const ack = replyFor(posted, lastReqId) as { response: { versions: string[] }; };
+    expect(ack.response).toBeTruthy();
+    expect(ack.response.versions).toContain("org.matrix.msc2762");
+    expect(ack.response.versions).toContain("org.matrix.msc2974");
+    expect(ack.response.versions).toContain("org.matrix.msc4515");
+    expect(ack.response.versions).not.toContain("org.matrix.msc4533");
+    expect(ack.response.versions).not.toContain("town.robin.msc3846");
+  });
+
+  it("MSC2974 grants static + msc2762 patterns, rejects TURN, notifies, backfills m.call.member", () => {
+    const members = [fakeMemberEvent("@bob:hs.test", "mem1", { "m.call.member": { member_id: "mem1" } })];
+    const { el, posted } = fakeIframe();
+    const { client } = fakeClient({ members });
+    startWidgetHost({ client, roomId: ROOM, widgetId, iframe: el, origin: SERVICE });
+    ask({ posted }, "org.matrix.msc2974.request_capabilities", {
+      capabilities: ["m.always_on_screen", "town.robin.msc3846.turn_servers", "org.matrix.msc2762.send.state_event:m.call.member#*"],
+    });
+    const ack = replyFor(posted, lastReqId) as { response: { updated: string[] } };
+    expect(ack.response.updated).toContain("m.always_on_screen");
+    expect(ack.response.updated).toContain("org.matrix.msc2762.send.state_event:m.call.member#*");
+    expect(ack.response.updated).not.toContain("town.robin.msc3846.turn_servers");
+    expect(posted.filter((p) => p.action === "notify_capabilities").length).toBe(0);
+    const bs = posted.find((p) => p.action === "update_state" && (p.data as { type: string }).type === "m.call.member");
+    expect(bs).toBeTruthy();
+    expect(((bs as { data: { content: Record<string, unknown> } }).data.content["m.call.member"] as { member_id: string }).member_id).toBe("mem1");
+  });
+
+  it("relays send_event state writes (m.call.member join) and echoes the requestId", () => {
+    const { el, posted } = fakeIframe();
+    const { client, states } = fakeClient();
+    startWidgetHost({ client, roomId: ROOM, widgetId, iframe: el, origin: SERVICE });
+    ask({ posted }, "send_event", { type: "m.call.member", state_key: "mem-xyz", content: { "m.call.member": { member_id: "mem-xyz" } }, room_id: ROOM });
+    return waitFor(() => {
+      expect(states).toHaveLength(1);
+      expect((states[0] as [string, string])[1]).toBe("m.call.member");
+      const ack = replyFor(posted, lastReqId) as { response: { event_id: string; room_id: string }; };
+      expect(ack.response).toBeTruthy();
+      expect(ack.response.event_id).toBe("$st1");
+      expect(ack.response.room_id).toBe(ROOM);
+    });
+  });
+
+  it("relays send_event state-less messages to sendEvent", () => {
+    const { el, posted } = fakeIframe();
+    const { client, sent } = fakeClient();
+    startWidgetHost({ client, roomId: ROOM, widgetId, iframe: el, origin: SERVICE });
+    ask({ posted }, "send_event", { type: "m.reaction", content: { "m.relates_to": {} }, room_id: ROOM });
+    return waitFor(() => {
+      expect(sent).toHaveLength(1);
+      expect((sent[0] as [string, string])[1]).toBe("m.reaction");
+    });
+  });
+
+  it("refuses send_event into a foreign room", () => {
+    const { el, posted } = fakeIframe();
+    const { client, states } = fakeClient();
+    startWidgetHost({ client, roomId: ROOM, widgetId, iframe: el, origin: SERVICE });
+    ask({ posted }, "send_event", { type: "m.room.topic", state_key: "", content: {}, room_id: "!other:hs.test" });
+    return waitFor(() => {
+      expect(states).toHaveLength(0);
+      const err = replyFor(posted, lastReqId) as { response: { error: { message: string } } };
+      expect(err.response.error.message).toMatch(/own room/);
+    });
+  });
+
+  it("get_openid returns an allowed OpenID credential bundle", () => {
+    const { el, posted } = fakeIframe();
+    const { client } = fakeClient();
+    startWidgetHost({ client, roomId: ROOM, widgetId, iframe: el, origin: SERVICE });
+    ask({ posted }, "get_openid", {});
+    return waitFor(() => {
+      const ack = replyFor(posted, lastReqId) as { response: Record<string, string> };
+      expect(ack.response.state).toBe("allowed");
+      expect(ack.response.access_token).toBe("openid-alice-fake");
+      expect(ack.response.matrix_server_name).toBe("hs.test");
+    });
+  });
+
+  it("msc4515 get_rtc_transports returns the livekit transport list", () => {
+    const { el, posted } = fakeIframe();
+    const { client } = fakeClient();
+    startWidgetHost({ client, roomId: ROOM, widgetId, iframe: el, origin: SERVICE });
+    ask({ posted }, "org.matrix.msc4515.get_rtc_transports", {});
+    return waitFor(() => {
+      const ack = replyFor(posted, lastReqId) as { response: { rtc_transports: Array<{ livekit_service_url: string }> } };
+      expect(ack.response.rtc_transports[0]!.livekit_service_url).toBe(SERVICE);
+    });
+  });
+
+  it("pushes update_state on live m.call.member changes (remote leave tombstone)", () => {
+    const { el, posted } = fakeIframe();
+    const { client, stateHandlers } = fakeClient();
+    startWidgetHost({ client, roomId: ROOM, widgetId, iframe: el, origin: SERVICE });
+    expect(stateHandlers).toHaveLength(1);
+    stateHandlers[0]!(fakeMemberEvent("@bob:hs.test", "mem1", {}), { roomId: ROOM });
+    const push = posted.find((p) => p.action === "update_state") as { data: { content: unknown; state_key: string } };
+    expect(push.data.state_key).toBe("mem1");
+    expect(push.data.content).toEqual({});
+  });
+
+  it("relays send_to_device", () => {
+    const { el, posted } = fakeIframe();
+    const { client, devices } = fakeClient();
+    startWidgetHost({ client, roomId: ROOM, widgetId, iframe: el, origin: SERVICE });
+    ask({ posted }, "send_to_device", { type: "m.call.notify", messages: { "@b:hs.test": { D: {} } } });
+    return waitFor(() => {
+      expect(devices).toHaveLength(1);
+      expect(replyFor(posted, lastReqId)).toBeTruthy();
+    });
+  });
+
+  it("rejects unknown actions and ignores foreign widget ids", () => {
+    const { el, posted } = fakeIframe();
+    const { client } = fakeClient();
+    startWidgetHost({ client, roomId: ROOM, widgetId, iframe: el, origin: SERVICE });
+    ask({ posted }, "teleport", {});
     window.dispatchEvent(
       new MessageEvent("message", {
-        data: { api: "w", sender: "widget", widgetId: "!other$evil", jsonrpc: "2.0", id: "10", method: "sendEvent", params: {} },
+        data: { api: "fromWidget", widgetId: "!other$evil", requestId: "x10", action: "send_event", data: {} },
         origin: SERVICE,
       }),
     );
     return waitFor(() => {
-      const err = posted.find((p) => p.id === "9");
-      expect((err as { error: { code: number } }).error.code).toBe(-32601);
-      expect(posted.find((p) => p.id === "10")).toBeUndefined();
+      const err = replyFor(posted, lastReqId) as { response: { error: { message: string } } };
+      expect(err.response.error.message).toMatch(/teleport/);
+      expect(posted.find((p) => p.requestId === "x10")).toBeUndefined();
     });
   });
 

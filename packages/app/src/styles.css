@@ -493,6 +493,19 @@ button.section-toggle {
 .call-bar .call-err { font-size: 12px; color: var(--err-fg); }
 .call-bar button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
 
+/* W15 2b: "in call" chip on the room subheader (m.call.member count) */
+.in-call-chip {
+  font-size: 11px;
+  line-height: 1.6;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+}
+.in-call-chip:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+
 /* W15 group-call stage: Element Call iframe overlay (phase 2a) */
 .call-stage {
   position: absolute;

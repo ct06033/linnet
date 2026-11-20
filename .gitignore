@@ -10,3 +10,4 @@ linnet-deviceb-*.mjs
 
 # AppImage inspect artifact (electron-builder --dir verification)
 squashfs-root/
+packages/app/.tmp-widget-host.mjs

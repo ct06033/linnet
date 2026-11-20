@@ -450,6 +450,27 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
         <div className="sub">
           <span className="members">{room?.getJoinedMemberCount?.() ?? 0} members</span>
           {(() => {
+            // W15 2b: live "in call" presence from m.call.member state rows
+            const evs = room?.currentState?.getStateEvents("m.call.member") ?? [];
+            const inCall = new Set<string>();
+            for (const ev of evs) {
+              const c = ev.getContent() as Record<string, unknown>;
+              const m = c?.["m.call.member"] as { member_id?: string } | undefined;
+              if (m && typeof m.member_id === "string") inCall.add(ev.getSender() ?? "?");
+            }
+            if (inCall.size === 0) return null;
+            return (
+              <button
+                className="in-call-chip"
+                data-testid="in-call-chip"
+                aria-label={`Open group call — ${inCall.size} in call`}
+                onClick={() => setGroupOpen(true)}
+              >
+                📞 {inCall.size} in call
+              </button>
+            );
+          })()}
+          {(() => {
             // P1 presence: 1:1 rooms show the partner's state inline
             const others = room ? Object.values(room.getJoinedMembers()).filter((m) => m.userId !== myUserId) : [];
             if (others.length !== 1) return null;

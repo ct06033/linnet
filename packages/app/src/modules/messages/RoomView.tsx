@@ -40,6 +40,7 @@ import { SecurityBanner, SecuritySheet } from "../security/Security.js";
 import { prodAdapter } from "../security/prod.js";
 import { RoomSettings } from "../settings/RoomSettings.js";
 import { getMonitor } from "../call/call.js";
+import { GroupCallStage } from "../call/GroupCallStage.js";
 import type { SecurityStatus } from "../security/state.js";
 import type { TimelineItemProps } from "./renderers.js";
 
@@ -63,6 +64,7 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
   const [secStatus, setSecStatus] = useState<SecurityStatus | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [callErr, setCallErr] = useState<string | null>(null);
+  const [groupOpen, setGroupOpen] = useState(false); // W15: group call stage
   // W14 item 14: the right panel (thread / room settings) is resizable
   const { startDrag } = usePanes();
   const scrollerRef = useRef<HTMLDivElement | null>(null);
@@ -381,6 +383,14 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
           >
             🎥
           </button>
+          {/* W15 phase 2a: group call (Element Call embed + MatrixRTC widget) */}
+          <button
+            className="call-btn"
+            aria-label="Start group call"
+            onClick={() => setGroupOpen(true)}
+          >
+            👥
+          </button>
           {callErr && (
             <span role="alert" className="call-err">
               {callErr}
@@ -391,6 +401,10 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
           <span className="members">{room?.getJoinedMemberCount?.() ?? 0} members</span>
         </div>
       </header>
+
+      {groupOpen && (
+        <GroupCallStage client={client} roomId={roomId} onClose={() => setGroupOpen(false)} />
+      )}
 
       <div className="body">
       <div className="col-main">

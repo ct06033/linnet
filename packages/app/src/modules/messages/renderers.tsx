@@ -9,6 +9,7 @@ import type { LinnetModule, TimelineItemContribution } from "@linnet/core";
 import { sanitizeHtml } from "./html.js";
 import { ImageBody, VoiceBody, FileBody } from "../media/renderers.js";
 import { YouTubeEmbed, extractYouTubeIds } from "../media/youtube.js";
+import { LinkPreview } from "./previews.js";
 import { stripFallbackQuote } from "./markdown.js";
 import {
   aggregateReactions,
@@ -119,10 +120,15 @@ function TextLike(kind: "text" | "notice" | "emote") {
   return (props: unknown): ReactNode => {
     const p = props as TimelineItemProps;
     const body = renderBody(p, p.ev);
+    // P1 URL previews: OG card for the first non-YouTube link in PLAIN text
+    // (html bodies could carry links we cannot see as text)
+    const content = (p.editContent ?? rawContentOf(p.ev)) as Record<string, unknown>;
+    const plainBody = String(content["body"] ?? "");
     return (
       <div className={`msg msg-${kind}${kind === "notice" ? " notice" : ""}`}>
         {kind === "emote" ? <span className="emote-star">* </span> : null}
         {body}
+        {kind === "text" && <LinkPreview body={plainBody} />}
         <ReactionRow {...p} />
       </div>
     );

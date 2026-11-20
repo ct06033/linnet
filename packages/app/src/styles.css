@@ -562,3 +562,32 @@ button.section-toggle {
   background: var(--bg-input); color: var(--fg); border: 1px solid var(--border);
   border-radius: 8px; padding: 5px 8px; font: inherit; font-size: 12px;
 }
+
+
+/* P1 URL previews — OG card under text messages */
+.link-preview {
+  display: flex; gap: 10px; margin-top: 6px; max-width: 420px;
+  border: 1px solid var(--border); border-left: 3px solid var(--accent);
+  border-radius: 10px; background: var(--bg-elev); padding: 8px 10px;
+  text-decoration: none; color: inherit; cursor: pointer;
+}
+.link-preview:hover { border-color: var(--accent); }
+.lp-img { width: 72px; height: 72px; object-fit: cover; border-radius: 8px; flex: none; }
+.lp-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.lp-title { font-weight: 700; font-size: 13px; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lp-desc { font-size: 12px; color: var(--fg-dim); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.lp-host { font-size: 11px; color: var(--fg-dim); }
+
+
+/* P1 inline PDF viewer — modal over the chat */
+.pdf-viewer {
+  position: fixed; inset: 0; z-index: 60; background: rgba(8, 8, 12, 0.72);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 24px;
+}
+.pdf-bar { display: flex; align-items: center; gap: 10px; color: var(--fg); background: var(--bg-elev);
+  border: 1px solid var(--border); border-radius: 10px; padding: 6px 12px; max-width: min(900px, 92vw); width: 100%; }
+.pdf-name { flex: 1; font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pdf-bar button { border: 1px solid var(--border); background: transparent; color: var(--fg-dim);
+  border-radius: 8px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
+.pdf-bar button:hover { color: var(--fg); border-color: var(--accent); }
+.pdf-viewer iframe { width: min(900px, 92vw); height: min(78vh, 900px); border: 0; border-radius: 10px; background: #fff; }

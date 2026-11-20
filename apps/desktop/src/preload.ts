@@ -23,6 +23,8 @@ const bridge = {
   /** W9: dock/taskbar unread count + open a URL in the OS browser */
   setBadge: (count: number): Promise<void> => ipcRenderer.invoke("linnet:badge", count),
   openExternal: (url: string): void => ipcRenderer.send("linnet:open-external", url),
+  fetchUrl: (url: string): Promise<{ ok: boolean; status: number; html: string | null } | null> =>
+    ipcRenderer.invoke("linnet:fetch-url", url),
   /** reserved: extension host attach point (docs/prd.md §6.9) */
   modules: {
     async load(_moduleId: string): Promise<{ ok: false; reason: string }> {

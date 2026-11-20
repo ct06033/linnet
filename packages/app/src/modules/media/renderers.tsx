@@ -141,16 +141,25 @@ export function VoiceBody(props: MediaBodyProps): ReactNode {
 
 export function FileBody(props: MediaBodyProps): ReactNode {
   const [busy, setBusy] = useState(false);
+  // P1: inline PDF viewer — same download path as Save, shown in a sandboxed
+  // blob iframe (Chromium's built-in pdf.js) instead of hitting the disk.
+  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const info = infoOf(props.content);
   const size = typeof info.size === "number" ? info.size : undefined;
   const kind = String(props.content["msgtype"] ?? "m.file");
-  const icon = kind === "m.video" ? "🎬" : "📎";
+  const mimetype = String(info.mimetype ?? "");
+  const isPdf = mimetype === "application/pdf" || /\.pdf([?#]|$)/i.test(bodyText(props.content));
+  const icon = kind === "m.video" ? "🎬" : isPdf ? "📕" : "📎";
+
+  async function getBytes(): Promise<Uint8Array> {
+    return props.content["file"]
+      ? await downloadEncryptedMedia(props.content, fetch, props.client.getHomeserverUrl(), tokenOf(props.client))
+      : await downloadMedia(String(props.content["url"]), fetch, props.client.getHomeserverUrl(), tokenOf(props.client));
+  }
   async function save(): Promise<void> {
     setBusy(true);
     try {
-      const bytes = props.content["file"]
-        ? await downloadEncryptedMedia(props.content, fetch, props.client.getHomeserverUrl(), tokenOf(props.client))
-        : await downloadMedia(String(props.content["url"]), fetch, props.client.getHomeserverUrl(), tokenOf(props.client));
+      const bytes = await getBytes();
       const url = URL.createObjectURL(new Blob([bytes as unknown as BlobPart], { type: String(info.mimetype ?? "application/octet-stream") }));
       const a = document.createElement("a");
       a.href = url;
@@ -162,15 +171,58 @@ export function FileBody(props: MediaBodyProps): ReactNode {
       setBusy(false);
     }
   }
+  async function viewPdf(): Promise<void> {
+    setBusy(true);
+    try {
+      const bytes = await getBytes();
+      setPdfUrl(URL.createObjectURL(new Blob([bytes as unknown as BlobPart], { type: "application/pdf" })));
+    } catch {
+      /* the Save button remains — retry there */
+    } finally {
+      setBusy(false);
+    }
+  }
+  useEffect(() => {
+    if (!pdfUrl) return;
+    return () => URL.revokeObjectURL(pdfUrl);
+  }, [pdfUrl]);
+  useEffect(() => {
+    if (!pdfUrl) return;
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === "Escape") setPdfUrl(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [pdfUrl]);
+
   return (
-    <div className="msg msg-file" data-testid={`file-${props.ev.getId()}`}>
-      <span className={`file-kind ${kind.replace(/[.]/g, "-")}`}>{icon}</span>
-      <span className="file-name">{bodyText(props.content)}</span>
-      {size != null && <span className="file-size">{size < 1024 * 1024 ? `${Math.round(size / 1024)} KB` : `${(size / 1048576).toFixed(1)} MB`}</span>}
-      <button className="file-save" disabled={busy} onClick={() => void save()} data-testid={`save-${props.ev.getId()}`}>
-        {busy ? "…" : "Save"}
-      </button>
-    </div>
+    <>
+      <div className="msg msg-file" data-testid={`file-${props.ev.getId()}`}>
+        <span className={`file-kind ${kind.replace(/[.]/g, "-")}`}>{icon}</span>
+        <span className="file-name">{bodyText(props.content)}</span>
+        {size != null && <span className="file-size">{size < 1024 * 1024 ? `${Math.round(size / 1024)} KB` : `${(size / 1048576).toFixed(1)} MB`}</span>}
+        {isPdf && (
+          <button className="file-save" disabled={busy} onClick={() => void viewPdf()} data-testid={`pdf-view-${props.ev.getId()}`}>
+            View
+          </button>
+        )}
+        <button className="file-save" disabled={busy} onClick={() => void save()} data-testid={`save-${props.ev.getId()}`}>
+          {busy ? "…" : "Save"}
+        </button>
+      </div>
+      {pdfUrl && (
+        <div className="pdf-viewer" role="dialog" aria-label="PDF viewer" data-testid="pdf-viewer">
+          <div className="pdf-bar">
+            <span className="pdf-name">{bodyText(props.content)}</span>
+            <button onClick={() => void save()}>Download</button>
+            <button aria-label="Close PDF" onClick={() => setPdfUrl(null)}>
+              ✕
+            </button>
+          </div>
+          <iframe title="PDF document" src={pdfUrl} data-testid="pdf-frame" />
+        </div>
+      )}
+    </>
   );
 }
 

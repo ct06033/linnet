@@ -36,6 +36,7 @@ import { ThreadPanel } from "./ThreadPanel.js";
 import { PinnedPanel, pinnedIds, togglePinned } from "./pinned.js";
 import { Viewer } from "../media/renderers.js";
 import { Avatar } from "../ui/avatar.js";
+import { PresenceDot } from "../ui/presence.js";
 import { PaneGutter, usePanes } from "../settings/panes.js";
 import { SecurityBanner, SecuritySheet } from "../security/Security.js";
 import { prodAdapter } from "../security/prod.js";
@@ -427,6 +428,12 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
         </div>
         <div className="sub">
           <span className="members">{room?.getJoinedMemberCount?.() ?? 0} members</span>
+          {(() => {
+            // P1 presence: 1:1 rooms show the partner's state inline
+            const others = room ? Object.values(room.getJoinedMembers()).filter((m) => m.userId !== myUserId) : [];
+            if (others.length !== 1) return null;
+            return <PresenceDot client={client} userId={others[0]!.userId} />;
+          })()}
         </div>
       </header>
 
@@ -504,12 +511,15 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
                 >
                   {firstInGroup && (
                     <div className="who">
-                      <Avatar
-                        client={client}
-                        mxc={memberAvatar(ev.getSender())}
-                        name={displayNameOf(client, ev.getSender() ?? "?")}
-                        size={26}
-                      />
+                      <span className="av-wrap">
+                        <Avatar
+                          client={client}
+                          mxc={memberAvatar(ev.getSender())}
+                          name={displayNameOf(client, ev.getSender() ?? "?")}
+                          size={26}
+                        />
+                        <PresenceDot client={client} userId={ev.getSender()} />
+                      </span>
                       <strong>{displayNameOf(client, ev.getSender() ?? "?")}</strong>
                     </div>
                   )}

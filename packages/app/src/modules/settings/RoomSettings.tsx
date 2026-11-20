@@ -14,6 +14,7 @@ import {
 import type { LinnetModule } from "@linnet/core";
 import { uploadBytes } from "../media/core.js";
 import { LockMark } from "../security/Security.js";
+import { PresenceDot } from "../ui/presence.js";
 import { modeFor, readPrefs, setRoomMode, writePrefs, type NotifyMode } from "../notify/model.js";
 
 export interface RoomSettingsProps {
@@ -168,6 +169,7 @@ export function RoomSettings({ client, roomId, onClose }: RoomSettingsProps): Re
         <ul>
           {members.joined.map((uid) => (
             <li key={uid} className="member joined">
+              <PresenceDot client={client} userId={uid} />
               {uid}
               {uid === me ? " (you)" : ""}
             </li>

@@ -6,6 +6,7 @@
  */
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ClientEvent,
   Direction,
   EventType,
   EventStatus,
@@ -35,6 +36,7 @@ import { Composer, type ComposerMode } from "./Composer.js";
 import { ThreadPanel } from "./ThreadPanel.js";
 import { PinnedPanel, pinnedIds, togglePinned } from "./pinned.js";
 import { SearchPanel } from "./SearchPanel.js";
+import { isIgnored, reportMessage, setIgnore } from "./moderation.js";
 import { Viewer } from "../media/renderers.js";
 import { Avatar } from "../ui/avatar.js";
 import { PresenceDot } from "../ui/presence.js";
@@ -68,6 +70,11 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [pinnedOpen, setPinnedOpen] = useState(false); // P1 pinning
   const [searchOpen, setSearchOpen] = useState(false); // P1 search/jump-to-date
+  // P1 moderation: revealed-ignored rows + open report panel {eventId, sender}
+  const [revealed, setRevealed] = useState<Set<string>>(new Set());
+  const [reportFor, setReportFor] = useState<{ eventId: string; sender: string } | null>(null);
+  const [reportReason, setReportReason] = useState("");
+  const [reportState, setReportState] = useState<"idle" | "busy" | "done" | "error">("idle");
   const [callErr, setCallErr] = useState<string | null>(null);
   const [groupOpen, setGroupOpen] = useState(false); // W15: group call stage
   // W14 item 14: the right panel (thread / room settings) is resizable
@@ -94,6 +101,8 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
     };
     const onTyping = (): void => bump();
     const onEcho = (_event: MatrixEvent, _room: Room | undefined, _data?: unknown): void => bump();
+    const onAccountData = (): void => bump(); // P1 moderation: ignored list changed
+    client.on(ClientEvent.AccountData, onAccountData);
     client.on(RoomEvent.Timeline, onTimeline);
     client.on(RoomStateEvent.Update, onUpdate);
     client.on(RoomMemberEvent.Typing, onTyping);
@@ -103,6 +112,7 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
       client.removeListener(RoomStateEvent.Update, onUpdate);
       client.removeListener(RoomMemberEvent.Typing, onTyping);
       client.removeListener(RoomEvent.LocalEchoUpdated, onEcho);
+      client.removeListener(ClientEvent.AccountData, onAccountData);
     };
   }, [client, roomId, bump]);
 
@@ -451,6 +461,48 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
       {groupOpen && (
         <GroupCallStage client={client} roomId={roomId} onClose={() => setGroupOpen(false)} />
       )}
+      {reportFor && (
+        <div className="explore-scrim" role="presentation" onClick={() => setReportFor(null)}>
+          <section className="report-dialog" role="dialog" aria-label="Report message" onClick={(e) => e.stopPropagation()} data-testid="report-dialog">
+            <strong>Report message from {shortName(reportFor.sender)}</strong>
+            <input
+              type="text"
+              aria-label="Report reason"
+              placeholder="Why are you reporting this?"
+              value={reportReason}
+              onChange={(e) => setReportReason(e.target.value)}
+            />
+            {reportState === "done" ? (
+              <p className="muted" data-testid="report-done">Reported — thank you.</p>
+            ) : (
+              <div className="report-actions">
+                <button
+                  onClick={() => {
+                    setReportState("busy");
+                    void reportMessage(client, roomId, reportFor.eventId, reportReason)
+                      .then(() => setReportState("done"))
+                      .catch(() => setReportState("error"));
+                  }}
+                  disabled={reportState === "busy"}
+                  data-testid="report-submit"
+                >
+                  {reportState === "busy" ? "Sending…" : "Submit report"}
+                </button>
+                <button
+                  onClick={() => {
+                    void setIgnore(client, reportFor.sender, true).then(() => setReportFor(null));
+                  }}
+                  data-testid="report-ignore"
+                >
+                  Ignore {shortName(reportFor.sender)}
+                </button>
+                <button aria-label="Close report" onClick={() => setReportFor(null)}>✕</button>
+              </div>
+            )}
+            {reportState === "error" && <p className="send-fail">report failed</p>}
+          </section>
+        </div>
+      )}
 
       <div className="body">
       <div className="col-main">
@@ -475,6 +527,18 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
           <div className="group">
             {g.events.map((ev, ei) => {
               const kind = kindOf(ev);
+              // P1 moderation: ignored senders collapse to one honest line
+              const evid = ev.getId();
+              if (evid && isIgnored(client, ev.getSender()) && !revealed.has(evid) && kind !== "system") {
+                return (
+                  <div className="row ignored-line" key={evid} data-testid={`ignored-${evid}`}>
+                    <em className="muted">
+                      Ignored message from {shortName(ev.getSender() ?? "?")} ·{" "}
+                      <button onClick={() => setRevealed((s) => new Set(s).add(evid))}>Show</button>
+                    </em>
+                  </div>
+                );
+              }
               const firstInGroup = ei === 0 && kind !== "system" && kind !== "redacted";
               const contrib = registry
                 ?.list("timeline-item")
@@ -616,6 +680,18 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
                           }}
                         >
                           ✎
+                        </button>
+                      )}
+                      {ev.getSender() !== myUserId && ev.getId() && (
+                        <button
+                          aria-label="Report message"
+                          onClick={() => {
+                            setReportFor({ eventId: ev.getId()!, sender: ev.getSender() ?? "?" });
+                            setReportReason("");
+                            setReportState("idle");
+                          }}
+                        >
+                          ⚑
                         </button>
                       )}
                       {ev.getSender() === myUserId && (

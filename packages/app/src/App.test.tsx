@@ -149,3 +149,52 @@ describe("W12a sync-error surfacing", () => {
     expect(alert.textContent).toMatch(/rejected|sync problem/i);
   });
 });
+
+// W14-VISIBILITY: red/green padlock encryption indicators in the room/DM list
+describe("W14 room-list padlocks", () => {
+  beforeEach(() =>
+    setSessionManagerForTests(
+      new SessionManager({
+        kv: new MemoryKv(),
+        secrets: new MemorySecrets(),
+        fetchFn: createFakeHomeserver({
+          accounts: [ALICE],
+          sync: () =>
+            makeSyncSnapshot({
+              userId: ALICE.userId,
+              rooms: [
+                { roomId: "!a1:hs.test", name: "linnet-dev" },
+                { roomId: "!sec:hs.test", name: "crypto-corner", encrypted: true },
+                { roomId: "!dm1:hs.test", name: "Mel" },
+              ],
+              direct: ["!dm1:hs.test"],
+            }),
+        }),
+      }),
+    ),
+  );
+
+  it("encrypted room gets the closed green mark, plain room + DM the open red one", async () => {
+    render(<App />);
+    await signIn();
+    await screen.findByText("crypto-corner", { selector: ".roomlist .name" });
+    const list = document.querySelector(".roomlist")!;
+    expect(list.querySelectorAll('[data-testid="lock-on"]')).toHaveLength(1);
+    expect(list.querySelectorAll('[data-testid="lock-off"]')).toHaveLength(2);
+    const on = list.querySelector('[data-testid="lock-on"]')!;
+    expect(on.getAttribute("aria-label")).toBe("Encrypted");
+    expect(on.getAttribute("title")).toBe("Encrypted");
+    const off = list.querySelector('[data-testid="lock-off"]')!;
+    expect(off.getAttribute("aria-label")).toBe("Not encrypted");
+    // colored SVG (fill currentColor path nodes), not an emoji
+    expect(off.querySelector("[fill='currentColor'], [stroke='currentColor']")).toBeTruthy();
+  });
+
+  it("the lock mark precedes the name inside the row button", async () => {
+    render(<App />);
+    await signIn();
+    const name = await screen.findByText("linnet-dev", { selector: ".roomlist .name" });
+    const first = name.parentElement!.firstElementChild!;
+    expect(first.getAttribute("data-testid")).toBe("lock-off");
+  });
+});

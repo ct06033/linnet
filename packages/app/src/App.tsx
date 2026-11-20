@@ -12,6 +12,7 @@ import { Login } from "./screens/Login.js";
 import { RoomView } from "./modules/messages/RoomView.js";
 import { SpaceRail } from "./modules/spaces/SpaceRail.js";
 import { addRoomToSpace, createRoom, createSpace, leaveAndMaybeForget, removeRoomFromSpace } from "./modules/spaces/actions.js";
+import { LockMark } from "./modules/security/Security.js";
 import { JoinRoomDialog, NewRoomDialog, NewSpaceDialog } from "./modules/dialogs.js";
 import { addableRooms, homeRooms, isDirectChild, spaceEntries, spacesForRail } from "./modules/spaces/tree.js";
 import { NotificationEngine, makeNotifierPort } from "./modules/notify/engine.js";
@@ -583,6 +584,7 @@ function Row({
         onOpenMenu(r.roomId, e.clientX, e.clientY);
       }}
     >
+      {!r.isSpace && <LockMark e2ee={r.e2ee} labeled />}
       <span className="name">{r.name}</span>
       {r.invite && <span className="invite">invite</span>}
       {r.unread > 0 && <span className="pill">{r.unread}</span>}

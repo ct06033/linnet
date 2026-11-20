@@ -23,6 +23,7 @@ function room(roomId: string, over: Partial<RoomSummary> = {}): RoomSummary {
     invite: false,
     isSpace: false,
     membership: "join",
+    e2ee: false,
     spaceChildren: [],
     ...over,
   };

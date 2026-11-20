@@ -91,6 +91,37 @@ describe("W5b room settings", () => {
     expect(screen.getByRole("button", { name: "Save name" }).hasAttribute("disabled")).toBe(true);
   });
 
+  it("W14 E1: enable encryption PUTs m.room.encryption after the inline confirm, button then hides", async () => {
+    render(<App />);
+    await openSettings("dev");
+    const sec = screen.getByTestId("enc-section");
+    expect(sec.textContent).toContain("Not encrypted");
+    fireEvent.click(screen.getByTestId("enc-enable"));
+    await screen.findByTestId("enc-confirm"); // confirm step BEFORE any mutation
+    expect(controls.calls.some((c) => decodeURIComponent(c.path).includes("/state/m.room.encryption"))).toBe(false);
+    fireEvent.click(screen.getByTestId("enc-enable-confirm"));
+    await waitFor(() =>
+      expect(
+        controls.calls.some(
+          (c) =>
+            c.method === "PUT" &&
+            decodeURIComponent(c.path).includes("/state/m.room.encryption") &&
+            (c.body as Record<string, unknown>)["algorithm"] === "m.megolm.v1.aes-sha2",
+        ),
+      ).toBeTruthy(),
+    );
+    await waitFor(() => expect(screen.queryByTestId("enc-enable")).toBeNull());
+    expect(screen.getByTestId("enc-section").textContent).toContain("Encrypted (Megolm)");
+  });
+
+  it("W14 E2: no enable-encryption button without power levels (PL-gated room)", async () => {
+    render(<App />);
+    await openSettings("low");
+    const sec = screen.getByTestId("enc-section");
+    expect(sec.textContent).toContain("Not encrypted");
+    expect(screen.queryByTestId("enc-enable")).toBeNull();
+  });
+
   it("R5: members list shows joined (you) and pending invites", async () => {
     render(<App />);
     await openSettings("dev");

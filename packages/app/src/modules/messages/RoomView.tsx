@@ -316,7 +316,14 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
       <header className="room-header">
         <div className="title">
           <span className="room-name">{room?.name ?? roomId}</span>
-          <SecurityBanner encrypted={e2ee} status={secStatus} onClick={() => setSecOpen(true)} />
+          {/* W14: encrypted rooms open the security center; the loud red
+              "Not encrypted" badge points at room settings (where encryption
+              can be enabled) */}
+          <SecurityBanner
+            encrypted={e2ee}
+            status={secStatus}
+            onClick={() => (e2ee ? setSecOpen(true) : setSettingsOpen(true))}
+          />
           <button className="settings-gear" aria-label="Room settings" onClick={() => setSettingsOpen(true)}>
             ⚙
           </button>

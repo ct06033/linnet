@@ -8,6 +8,7 @@ import {
   bootstrapSecurity,
   restoreBackupWithPassphrase,
   restoreBackupWithRecoveryKey,
+  unlockWithSecret,
 } from "@linnet/core";
 import type { SecurityAdapter, SasEntry, SessionRow, VerifyHandle } from "./Security.js";
 import { probeStatus } from "./state.js";
@@ -116,6 +117,13 @@ export const prodAdapter: SecurityAdapter = {
     restoreBackupWithPassphrase(client, passphrase, onProgress),
   restoreRecoveryKey: (client, key, onProgress) =>
     restoreBackupWithRecoveryKey(client, key, onProgress),
+  // W14: SSSS account + locked session -> core unlockWithSecret (proves the
+  // secret, parks the key for the client callback, imports cross-signing
+  // from 4S, restores the key backup). Returns the imported count.
+  async unlock({ client, secret, onProgress }) {
+    const r = await unlockWithSecret({ client, secret, onProgress });
+    return r.imported;
+  },
   status: async (client) =>
     probeStatus(client as unknown as Parameters<typeof probeStatus>[0], tokenOf(client)),
   async runBackup(client) {

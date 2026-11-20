@@ -262,10 +262,23 @@ main.roomview:not(.panel-open) .thread-panel { display: none; }
 .viewer-bar { display: flex; align-items: center; gap: 10px; color: #ddd; font-size: 13px; }
 .viewer-bar button { border: none; background: rgba(255,255,255,.12); color: #fff; border-radius: 8px; padding: 4px 10px; cursor: pointer; }
 .viewer-loading { color: #aaa; padding: 30px; }
-.e2ee-badge { border: none; background: transparent; color: inherit; cursor: pointer; font-size: 12px; opacity: .9; }
+.e2ee-badge { border: none; background: transparent; color: inherit; cursor: pointer; font-size: 12px; opacity: .9; display: inline-flex; align-items: center; gap: 4px; }
 .e2ee-badge.warn { color: #f0b429; }
 .e2ee-badge.on { color: #4cc98b; }
-.e2ee-badge.off { opacity: .5; }
+/* W14-VISIBILITY: "off" is now the LOUD red case (Not encrypted), not a
+   faded chip — same hue family as .lock-off so badge + list agree. */
+.e2ee-badge.off { color: #ef4444; opacity: 1; }
+/* W14 padlock marks: SVGs (emoji cannot be colored), currentColor-driven */
+.lock { width: 14px; height: 14px; flex: none; }
+.lock-on { color: #22c55e; }
+.lock-warn { color: #f0b429; }
+.lock-off { color: #ef4444; }
+.enc-zone { border-top: 1px solid var(--border, #333); padding-top: 8px; }
+.enc-state { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+.enc-state.on { color: #22c55e; }
+.enc-state.off { color: #ef4444; }
+.enc-confirm { display: flex; align-items: center; gap: 8px; }
+.unlock-nudge { display: flex; flex-direction: column; gap: 10px; border: 1px solid var(--border, #333); border-radius: 10px; padding: 12px; }
 .sheet-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 90; display: flex; align-items: center; justify-content: center; padding: 24px; }
 .sheet { background: var(--bg-elev, #1c212c); color: var(--fg); border: 1px solid var(--border, #333); border-radius: 14px; width: min(520px, 92vw); max-height: 80vh; overflow-y: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 12px; }
 .sheet header { display: flex; justify-content: space-between; align-items: center; font-weight: 600; }

@@ -1,5 +1,5 @@
 import { createClient, type MatrixClient } from "matrix-js-sdk";
-import { getBootstrapKey } from "./e2ee.js";
+import { getBootstrapKey, getUnlockedSsssKey, pickSsssKeyId } from "./e2ee.js";
 
 /**
  * Thin seam over matrix-js-sdk (pinned stable, never develop — PRD §4).
@@ -25,8 +25,13 @@ export function createClientSession(opts: SessionOptions): MatrixClient {
   }
   // 4S bootstrap stores cross-signing secrets into a brand-new key in the same
   // call; the getSecretStorageKey callback (fixed at createClient time) finds
-  // that key via the per-client holder in e2ee.ts. Single-SSSS-key product
-  // assumption: match the first advertised key id (re-key flows land later).
+  // that key via the per-client holder in e2ee.ts. W14 adds the SECOND source:
+  // the user-unlocked key parked by the unlock-session flow
+  // (setUnlockedSsssKey) — without it, accounts that already have Secure
+  // Secret Storage crashed at "getSecretStorageKey callback returned falsey"
+  // when bootstrapCrossSigning imported from 4S. Single-SSSS-key product
+  // assumption: match the advertised key id (default key preferred; re-key
+  // flows land later).
   let self: MatrixClient;
   // js-sdk 45 reads clientOpts.threadSupport in the CONSTRUCTOR (client.js:652
   // + getter ~7099) but declares the field only on IStartClientOpts — a typing
@@ -40,8 +45,8 @@ export function createClientSession(opts: SessionOptions): MatrixClient {
     fetchFn: opts.fetchFn,
     cryptoCallbacks: {
       getSecretStorageKey: async ({ keys }: { keys: Record<string, unknown> }, _name: string) => {
-        const privateKey = self ? getBootstrapKey(self) : undefined;
-        const keyId = Object.keys(keys ?? {})[0];
+        const privateKey = self ? getBootstrapKey(self) ?? getUnlockedSsssKey(self) : undefined;
+        const keyId = self ? pickSsssKeyId(self, keys) : undefined;
         return privateKey && keyId ? [keyId, privateKey] : null;
       },
     },

@@ -356,4 +356,13 @@ describe("W4a roomview", () => {
     expect(await screen.findByText("morning all")).toBeTruthy();
     expect(document.querySelector(".e2ee-badge")).toBeTruthy();
   });
+
+  it("W14: unencrypted room shows the loud 'Not encrypted' badge; click opens room settings", async () => {
+    await signInAndOpenDev();
+    const badge = await screen.findByTestId("security-banner");
+    expect(badge.textContent).toContain("Not encrypted");
+    expect(badge.querySelector("svg.lock-off")).toBeTruthy();
+    fireEvent.click(badge);
+    await screen.findByRole("region", { name: /Room settings/ });
+  });
 });

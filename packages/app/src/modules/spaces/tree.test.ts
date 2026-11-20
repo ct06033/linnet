@@ -7,6 +7,8 @@ import { describe, expect, it } from "vitest";
 import type { RoomSummary } from "@linnet/core";
 import {
   addableRooms,
+  dmsWithMembers,
+  favouriteRooms,
   homeRooms,
   isDirectChild,
   orderChildRefs,
@@ -24,6 +26,8 @@ function room(roomId: string, over: Partial<RoomSummary> = {}): RoomSummary {
     isSpace: false,
     membership: "join",
     spaceChildren: [],
+    memberCount: 0,
+    favourite: false,
     ...over,
   };
 }
@@ -130,5 +134,37 @@ describe("addableRooms / isDirectChild (S4)", () => {
   it("remove affordance only for direct children", () => {
     expect(isDirectChild("!sp:h.t", "!team:h.t", rooms)).toBe(true);
     expect(isDirectChild("!sp:h.t", "!free:h.t", rooms)).toBe(false);
+  });
+});
+
+// ── W14 ─ favourites + group-view DMs (pure rules) ────────────────
+
+describe("W14 favouriteRooms", () => {
+  it("keeps favourited rooms only; invites and spaces never qualify", () => {
+    const rooms = [
+      room("!a", { favourite: true }),
+      room("!b", { favourite: false }),
+      room("!i", { favourite: true, invite: true }),
+      room("!s", { favourite: true, isSpace: true }),
+    ];
+    expect(favouriteRooms(rooms).map((r) => r.roomId)).toEqual(["!a"]);
+  });
+
+  it("preserves incoming list order", () => {
+    const rooms = [room("!z", { favourite: true }), room("!a", { favourite: true })];
+    expect(favouriteRooms(rooms).map((r) => r.roomId)).toEqual(["!z", "!a"]);
+  });
+});
+
+describe("W14 dmsWithMembers (space view shows shared DMs)", () => {
+  it("matches DMs by partner id, ignores rooms/invites/strangers", () => {
+    const rooms = [
+      room("!dm1", { isDM: true, dmUserId: "@bob:h" }),
+      room("!dm2", { isDM: true, dmUserId: "@eve:h" }),
+      room("!dm3", { isDM: true, dmUserId: "@bob:h", invite: true }),
+      room("!plain", { dmUserId: "@bob:h" }),
+    ];
+    const got = dmsWithMembers(rooms, new Set(["@bob:h"]));
+    expect(got.map((r) => r.roomId)).toEqual(["!dm1"]);
   });
 });

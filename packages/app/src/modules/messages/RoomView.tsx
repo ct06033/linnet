@@ -34,6 +34,7 @@ import {
 import { Composer, type ComposerMode } from "./Composer.js";
 import { ThreadPanel } from "./ThreadPanel.js";
 import { PinnedPanel, pinnedIds, togglePinned } from "./pinned.js";
+import { SearchPanel } from "./SearchPanel.js";
 import { Viewer } from "../media/renderers.js";
 import { Avatar } from "../ui/avatar.js";
 import { PresenceDot } from "../ui/presence.js";
@@ -66,6 +67,7 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
   const [secStatus, setSecStatus] = useState<SecurityStatus | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [pinnedOpen, setPinnedOpen] = useState(false); // P1 pinning
+  const [searchOpen, setSearchOpen] = useState(false); // P1 search/jump-to-date
   const [callErr, setCallErr] = useState<string | null>(null);
   const [groupOpen, setGroupOpen] = useState(false); // W15: group call stage
   // W14 item 14: the right panel (thread / room settings) is resizable
@@ -186,16 +188,17 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
   // W12 item 2: Esc also closes the settings panel and the image viewer
   // (P1: and the pinned list)
   useEffect(() => {
-    if (!settingsOpen && !pinnedOpen && viewer === null) return;
+    if (!settingsOpen && !pinnedOpen && !searchOpen && viewer === null) return;
     const onKey = (e: KeyboardEvent): void => {
       if (e.key !== "Escape") return;
       if (viewer !== null) setViewer(null);
+      else if (searchOpen) setSearchOpen(false);
       else if (pinnedOpen) setPinnedOpen(false);
       else if (settingsOpen) setSettingsOpen(false);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [settingsOpen, pinnedOpen, viewer]);
+  }, [settingsOpen, pinnedOpen, searchOpen, viewer]);
 
   // autoscroll + receipts
   useEffect(() => {
@@ -357,7 +360,7 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
 
   return (
     <main
-      className={`roomview${openThread || settingsOpen || pinnedOpen ? " panel-open" : ""}`}
+      className={`roomview${openThread || settingsOpen || pinnedOpen || searchOpen ? " panel-open" : ""}`}
       data-testid="roomview"
     >
       <header className="room-header">
@@ -376,6 +379,14 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
             status={secStatus}
             onClick={() => (e2ee ? setSecOpen(true) : setSettingsOpen(true))}
           />
+          <button
+            className="search-btn"
+            aria-label="Search this room"
+            data-testid="search-open"
+            onClick={() => setSearchOpen((v) => !v)}
+          >
+            🔍
+          </button>
           {pinnedSet.size > 0 && (
             <button
               className="pinned-chip"
@@ -666,9 +677,12 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
       {secOpen && (
         <SecuritySheet client={client} adapter={prodAdapter} onClose={() => setSecOpen(false)} />
       )}
-      {(openThread || settingsOpen || pinnedOpen) && <PaneGutter pane="panel" startDrag={startDrag} label="Resize panel" />}
+      {(openThread || settingsOpen || pinnedOpen || searchOpen) && <PaneGutter pane="panel" startDrag={startDrag} label="Resize panel" />}
       {settingsOpen && (
         <RoomSettings client={client} roomId={roomId} onClose={() => setSettingsOpen(false)} />
+      )}
+      {searchOpen && room && (
+        <SearchPanel client={client} room={room} onClose={() => setSearchOpen(false)} onJump={(id) => { jumpToEvent(id); setSearchOpen(false); }} />
       )}
       {pinnedOpen && room && (
         <PinnedPanel

@@ -110,13 +110,59 @@ function mkLive(meta: AccountMetadata, client: MatrixClient): LiveSession {
 }
 
 /**
+ * Crypto IndexedDB store name for ONE account. js-sdk's default prefix
+ * ("matrix-js-sdk", the rust crypto wasm StoreHandle name) is a single
+ * database per ORIGIN holding one account key (userId:deviceId). With the
+ * default, a second login — new device after logout, or a second account on
+ * this origin — opens the old device's store and OlmMachine throws
+ * "the account in the store doesn't match the account in the constructor"
+ * (Sean's 11-20 login failure). Keying the DB by (user, device) makes every
+ * session's crypto store independent; logout deletes the DB (see deleteCryptoDb).
+ */
+export function cryptoDbPrefixFor(userId: string, deviceId: string): string {
+  return `linnet-${userId}:${deviceId}`;
+}
+
+/**
  * initRustCrypto must run BEFORE startClient so the crypto stack processes
  * the initial /sync (to-device room keys, OTK counts). IndexedDB only where
  * it exists (Electron renderer); vitest/node gets the in-memory store.
+ * W16: per-account cryptoDatabasePrefix (see cryptoDbPrefixFor).
  */
-async function ensureCrypto(client: MatrixClient): Promise<void> {
+export async function ensureCrypto(client: MatrixClient): Promise<void> {
   if (client.getCrypto()) return;
-  await client.initRustCrypto({ useIndexedDB: typeof indexedDB !== "undefined" });
+  if (typeof indexedDB === "undefined") {
+    await client.initRustCrypto({ useIndexedDB: false });
+    return;
+  }
+  const userId = client.getUserId();
+  const deviceId = client.getDeviceId();
+  const prefix = userId && deviceId ? cryptoDbPrefixFor(userId, deviceId) : undefined;
+  await client.initRustCrypto(prefix ? { useIndexedDB: true, cryptoDatabasePrefix: prefix } : { useIndexedDB: true });
+}
+
+/** Best-effort delete of an account's crypto IndexedDB store (logout cleanup).
+ *  Resolves on success/error; if a stale connection blocks the delete we give
+ *  up after 5s rather than hang logout — the DB is per-device and harmless. */
+async function deleteCryptoDb(userId: string, deviceId: string): Promise<void> {
+  if (typeof indexedDB === "undefined") return;
+  await new Promise<void>((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (!done) {
+        done = true;
+        resolve();
+      }
+    };
+    try {
+      const req = indexedDB.deleteDatabase(cryptoDbPrefixFor(userId, deviceId));
+      req.onsuccess = finish;
+      req.onerror = finish;
+    } catch {
+      finish();
+    }
+    setTimeout(finish, 5_000);
+  });
 }
 
 /**
@@ -501,6 +547,14 @@ export class SessionManager {
     }
     await this.opts.secrets.remove(secretKeyFor(accountId));
     await this.store.remove(accountId);
+    // W16: wipe the account's crypto IndexedDB too. stopClient() above closed
+    // the OlmMachine (and its IDB connections), so the delete can proceed.
+    // Without this the orphaned store is harmless to NEW logins (per-device
+    // DB names) but leaks disk + stale device keys forever.
+    const sep = accountId.lastIndexOf("|");
+    if (sep > 0) {
+      await deleteCryptoDb(accountId.slice(0, sep), accountId.slice(sep + 1));
+    }
     if (this.activeId === accountId) {
       this.activeId = this.live.keys().next().value ?? null;
       if (this.activeId) this.setActive(this.activeId);

@@ -174,7 +174,9 @@ describe("W4a roomview", () => {
   it("opens a room: header, topic, grouping, system lines, edit badge, quote, utd", async () => {
     await signInAndOpenDev();
     // header
-    expect(await screen.findByText("main dev room")).toBeTruthy();
+    // W14 item 13: topic lives in the title bar as a ghost (the row list also
+    // carries it) — scope to the header
+    expect(await screen.findByText("main dev room", { selector: ".room-header .room-topic-ghost" })).toBeTruthy();
     expect(screen.getAllByText("linnet-dev").length).toBeGreaterThan(0);
     // seeded messages render
     expect(await screen.findByText("morning all")).toBeTruthy();
@@ -355,5 +357,14 @@ describe("W4a roomview", () => {
     await signInAndOpenDev();
     expect(await screen.findByText("morning all")).toBeTruthy();
     expect(document.querySelector(".e2ee-badge")).toBeTruthy();
+  });
+
+  it("W14: unencrypted room shows the loud 'Not encrypted' badge; click opens room settings", async () => {
+    await signInAndOpenDev();
+    const badge = await screen.findByTestId("security-banner");
+    expect(badge.textContent).toContain("Not encrypted");
+    expect(badge.querySelector("svg.lock-off")).toBeTruthy();
+    fireEvent.click(badge);
+    await screen.findByRole("region", { name: /Room settings/ });
   });
 });

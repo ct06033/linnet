@@ -17,6 +17,46 @@ export function getBootstrapKey(client: MatrixClient): Uint8Array<ArrayBuffer> |
 }
 
 /**
+ * W14 per-client holder for a USER-UNLOCKED SSSS key (the unlock-session
+ * flow). Same purpose as the bootstrap holder, different origin: the key was
+ * derived from the account's EXISTING Secure Secret Storage (passphrase or
+ * recovery key), not created mid-bootstrap. cryptoCallbacks.getSecretStorageKey
+ * in sdk.ts consults both — without the second source, bootstrapCrossSigning's
+ * internal secretStorage.get("m.cross_signing.*") on an account that already
+ * has 4S dies at "getSecretStorageKey callback returned falsey" (Sean's real
+ * crash; rust-crypto/CrossSigningIdentity.js always tries 4S first).
+ */
+const unlockedSsssKeys = new WeakMap<MatrixClient, Uint8Array<ArrayBuffer>>();
+export function setUnlockedSsssKey(client: MatrixClient, privateKey: Uint8Array<ArrayBuffer>): void {
+  unlockedSsssKeys.set(client, privateKey);
+}
+export function getUnlockedSsssKey(client: MatrixClient): Uint8Array<ArrayBuffer> | undefined {
+  return unlockedSsssKeys.get(client);
+}
+
+/** The account's default SSSS key id (m.secret_storage.default_key -> content.key). */
+export function defaultSsssKeyId(client: MatrixClient): string | null {
+  const acct = (
+    client.getAccountData as unknown as (k: string) => { getContent: () => unknown } | undefined
+  )("m.secret_storage.default_key")?.getContent() as { key?: string } | undefined;
+  return acct?.key ?? null;
+}
+
+/**
+ * Pick the advertised key id that our single stored SSSS key belongs to:
+ * prefer the account's default key id when it is among `keys`, else the first
+ * advertised id. Single-SSSS-key product assumption (same as sdk.ts — re-key
+ * flows land later); returning a keyId NOT in `keys` would make js-sdk throw
+ * "App returned unknown key from getSecretStorageKey!".
+ */
+export function pickSsssKeyId(client: MatrixClient, keys: Record<string, unknown>): string | undefined {
+  const def = defaultSsssKeyId(client);
+  if (def && keys && Object.prototype.hasOwnProperty.call(keys, def)) return def;
+  return Object.keys(keys ?? {})[0];
+}
+
+
+/**
  * E2EE security lifecycle (PRD §6.4 — the make-or-break surface).
  * Thin, honest orchestration over js-sdk 45 CryptoApi; UI screens call ONLY this.
  */
@@ -47,6 +87,17 @@ export async function bootstrapSecurity(opts: {
   if (passphrase.length < 8) throw new Error("passphrase too short (min 8)");
   const crypto = client.getCrypto();
   if (!crypto) throw new Error("crypto not initialised — call with an initCrypto session");
+
+  // W14 defense-in-depth: an account that ALREADY has Secure Secret Storage
+  // must not be re-bootstrapped here — bootstrapCrossSigning would import
+  // from the existing 4S and die at the getSecretStorageKey callback (holder
+  // empty -> "callback returned falsey"). The UI routes these cases to
+  // unlockWithSecret; this guard protects any caller that misses that branch.
+  if (await crypto.isSecretStorageReady()) {
+    throw new Error(
+      "This account already has Secure Secret Storage — enter your existing passphrase or recovery key to unlock this session instead.",
+    );
+  }
 
   await crypto.bootstrapCrossSigning({
     authUploadDeviceSigningKeys: async (makeRequest) => {
@@ -96,11 +147,40 @@ export async function securityReady(client: MatrixClient, ms = 20000): Promise<b
 }
 
 /**
- * New-device path via SECURITY PASSPHRASE — the proper 4S route, NOT the
- * deprecated keyFromAuthData shortcut (rust backups carry no private_key_salt;
- * js-sdk's own restoreKeyBackupWithPassphrase is legacy libolm-era and fails
- * against them — found on HS-A, 2026-11-19):
- *   passphrase -> PBKDF2 w/ the SSSS key description's salt/iterations
+ * Shared passphrase -> SSSS key derivation (W14 extraction — used by
+ * restoreBackupWithPassphrase AND unlockWithSecret, identical behavior):
+ * read m.secret_storage.default_key, check its description carries a
+ * PBKDF2 passphrase spec, then keyFromAuthData with those salt/iterations.
+ */
+async function deriveSsssKeyFromPassphrase(
+  client: MatrixClient,
+  passphrase: string,
+): Promise<{ keyId: string; key: Uint8Array<ArrayBuffer> }> {
+  const acct = (t: string) =>
+    (client.getAccountData as unknown as (k: string) => { getContent: () => unknown } | undefined)(t)?.getContent();
+  const defaultKeyId = (acct("m.secret_storage.default_key") as { key?: string } | undefined)?.key;
+  if (!defaultKeyId) throw new Error("no default secret storage key configured");
+  const desc = acct("m.secret_storage.key." + defaultKeyId) as
+    | { algorithm?: string; passphrase?: { algorithm?: string; iterations?: number; salt?: string } }
+    | undefined;
+  const p = desc?.passphrase;
+  if (!p?.salt || !p.iterations || p.algorithm !== "m.pbkdf2") {
+    throw new Error("default SSSS key is not passphrase-derived");
+  }
+  // PBKDF2 derivation itself: reuse js-sdk's exported helper by mapping the SSSS
+  // description onto its (legacy-shaped) authData fields — same algorithm per spec.
+  const key = await keyFromAuthData(
+    { private_key_salt: p.salt, private_key_iterations: p.iterations, private_key_bits: 256 } as never,
+    passphrase,
+  );
+  return { keyId: defaultKeyId, key: key as Uint8Array<ArrayBuffer> };
+}
+
+/**
+ * New-device path via SECURITY PASSPHRASE — the proper 4S route (rust
+ * backups carry no private_key_salt; js-sdk's own restoreKeyBackupWithPassphrase
+ * is legacy libolm-era and fails against them — found on HS-A, 2026-11-19):
+ *   passphrase -> deriveSsssKeyFromPassphrase
  *            -> unlock m.megolm_backup.v1 from secret storage
  *            -> store backup key -> restore megolm keys.
  * Returns imported-key count from the final restore.
@@ -115,26 +195,10 @@ export async function restoreBackupWithPassphrase(
   const info = await crypto.getKeyBackupInfo();
   if (!info) throw new Error("no key backup on server");
 
-  const acct = (t: string) =>
-    (client.getAccountData as unknown as (k: string) => { getContent: () => unknown } | undefined)(t)?.getContent();
-  const defaultKeyId = (acct("m.secret_storage.default_key") as { key?: string } | undefined)?.key;
-  if (!defaultKeyId) throw new Error("no default secret storage key configured");
-  const desc = acct("m.secret_storage.key." + defaultKeyId) as
-    | { algorithm?: string; passphrase?: { algorithm?: string; iterations?: number; salt?: string } }
-    | undefined;
-  const p = desc?.passphrase;
-  if (!p?.salt || !p.iterations || p.algorithm !== "m.pbkdf2") {
-    throw new Error("default SSSS key is not passphrase-derived");
-  }
-  // PBKDF2 derivation itself: reuse js-sdk's exported helper by mapping the SSSS
-  // description onto its (legacy-shaped) authData fields — same algorithm per spec.
-  const ssssKey = await keyFromAuthData(
-    { private_key_salt: p.salt, private_key_iterations: p.iterations, private_key_bits: 256 } as never,
-    passphrase,
-  );
+  const { keyId, key: ssssKey } = await deriveSsssKeyFromPassphrase(client, passphrase);
 
   const sss = new ServerSideSecretStorageImpl(client as never, {
-    getSecretStorageKey: async () => [defaultKeyId, ssssKey as Uint8Array<ArrayBuffer>],
+    getSecretStorageKey: async () => [keyId, ssssKey],
   });
   const b64 = await sss.get("m.megolm_backup.v1" as never);
   if (!b64) throw new Error("backup key not found in secret storage (wrong passphrase?)");
@@ -156,18 +220,14 @@ async function backupKeyFromSSSS(
   ssssKey: Uint8Array<ArrayBuffer>,
 ): Promise<string> {
   const sss = new ServerSideSecretStorageImpl(client as never, {
-    getSecretStorageKey: async () => {
-      const keyId = await sss0(client);
+    getSecretStorageKey: async ({ keys }: { keys: Record<string, unknown> }) => {
+      const keyId = pickSsssKeyId(client, keys);
       return keyId ? [keyId, ssssKey] : null;
     },
   });
   const b64 = await sss.get("m.megolm_backup.v1" as never);
   if (!b64) throw new Error("backup key not found in secret storage");
   return b64;
-}
-async function sss0(client: MatrixClient): Promise<string | null> {
-  const acct = (client.getAccountData as unknown as (k: string) => { getContent: () => unknown } | undefined)("m.secret_storage.default_key")?.getContent() as { key?: string } | undefined;
-  return acct?.key ?? null;
 }
 
 export async function restoreBackupWithRecoveryKey(
@@ -191,4 +251,115 @@ export async function restoreBackupWithRecoveryKey(
     },
   } as never);
   return res?.total ?? 0;
+}
+
+/** The user's secret for the unlock-session flow: EITHER the SSSS passphrase
+ *  OR the base58 recovery key. Discriminated by present key. */
+export type UnlockSecret = { passphrase: string } | { recoveryKey: string };
+
+/**
+ * W14 UNLOCK-SESSION: an account that ALREADY has Secure Secret Storage (set
+ * up by Element or another Linnet session — Sean's real case) but a locked
+ * fresh session. The old crash path: bootstrapSecurity's
+ * bootstrapCrossSigning always calls secretStorage.get("m.cross_signing.*")
+ * first; with 4S present the SDK asks our cryptoCallbacks.getSecretStorageKey
+ * and — no bootstrap holder key — js-sdk threw
+ * "getSecretStorageKey callback returned falsey" (secret-storage.js:374).
+ *
+ * This flow proves the secret FIRST (decrypt m.cross_signing.master via a
+ * local ServerSideSecretStorageImpl — same pattern as backupKeyFromSSSS),
+ * then parks the key so the client-level callback serves it, then runs
+ * bootstrapCrossSigning({}) which takes rust's import-from-4S branch (signs
+ * the local device via the outgoing-request processor — NO UIAA, so no
+ * password param), and finally restores the server key backup.
+ *
+ * Throws "wrong passphrase or recovery key" on any decryption failure BEFORE
+ * mutating anything, and "nothing to unlock — no secrets found in secret
+ * storage" when 4S holds neither master secret nor a backup secret.
+ */
+export async function unlockWithSecret(opts: {
+  client: MatrixClient;
+  secret: UnlockSecret;
+  onProgress?: (p: BackupRestoreProgress) => void;
+}): Promise<{ imported: number }> {
+  const { client, secret, onProgress } = opts;
+  const crypto = client.getCrypto();
+  if (!crypto) throw new Error("crypto not initialised — call with an initCrypto session");
+
+  // 1) derive the candidate SSSS key bytes from whatever the user typed
+  let key: Uint8Array<ArrayBuffer>;
+  if ("passphrase" in secret && typeof secret.passphrase === "string") {
+    key = (await deriveSsssKeyFromPassphrase(client, secret.passphrase)).key;
+  } else if ("recoveryKey" in secret && typeof secret.recoveryKey === "string") {
+    key = decodeRecoveryKey(secret.recoveryKey) as Uint8Array<ArrayBuffer>;
+  } else {
+    throw new Error("unlock: provide a passphrase or a recovery key");
+  }
+
+  // 2) PROVE the secret before mutating anything: decrypt the cross-signing
+  //    master secret through a local storage (MAC mismatch throws).
+  const sss = new ServerSideSecretStorageImpl(client as never, {
+    getSecretStorageKey: async ({ keys }: { keys: Record<string, unknown> }) => {
+      const keyId = pickSsssKeyId(client, keys);
+      return keyId ? [keyId, key] : null;
+    },
+  });
+  let master: string | undefined;
+  try {
+    master = await sss.get("m.cross_signing.master" as never);
+  } catch {
+    throw new Error("wrong passphrase or recovery key");
+  }
+  if (!master) {
+    // no master secret in 4S: accept a successful backup-secret fetch when a
+    // key backup exists; otherwise there is nothing this flow can restore.
+    const hasBackup = Boolean(await crypto.getKeyBackupInfo());
+    if (!hasBackup) throw new Error("nothing to unlock — no secrets found in secret storage");
+    try {
+      const backupSecret = await sss.get("m.megolm_backup.v1" as never);
+      if (!backupSecret) throw new Error("absent");
+    } catch {
+      throw new Error("wrong passphrase or recovery key");
+    }
+  }
+
+  // 3) from here on the client-level callback serves the key — this is what
+  //    makes bootstrapCrossSigning's internal secretStorage.get succeed.
+  setUnlockedSsssKey(client, key);
+
+  // importCrossSigningKeys fails SILENTLY unless the machine already knows the
+  // cross-signing PUBLIC keys; a locked device that has joined no rooms yet
+  // has nobody to trigger /keys/query — force one for our own user first
+  // (rust feeds the response into the machine via the outgoing-request
+  // processor).
+  const me = client.getUserId();
+  if (me) await crypto.getUserDeviceInfo([me], true);
+
+  // 4) import the cross-signing identity from 4S into this device (no UIAA on
+  //    the import branch: device signing rides the outgoing-request processor).
+  await crypto.bootstrapCrossSigning({});
+
+  // 5) key backup restore. HS-A-proven (W14): js-sdk 45 restoreKeyBackup only
+  //    decrypts with a backup key CACHED in the machine — rust-crypto.ts:1511
+  //    throws "No decryption key found in crypto store" otherwise — so feed it
+  //    from 4S first, exactly like restoreBackupWithPassphrase does. If no
+  //    backup exists at all, there is nothing to restore (imported 0).
+  let imported = 0;
+  const info = await crypto.getKeyBackupInfo();
+  if (info) {
+    const b64 = await sss.get("m.megolm_backup.v1" as never);
+    if (b64) {
+      const backupKey = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      await crypto.storeSessionBackupPrivateKey(backupKey, info.version);
+    }
+    await crypto.checkKeyBackupAndEnable();
+    const res = await crypto.restoreKeyBackup({
+      progressCallback: (p: unknown) => {
+        const q = p as { total?: number; imported?: number };
+        onProgress?.({ total: q.total, imported: q.imported });
+      },
+    } as never);
+    imported = res?.total ?? 0;
+  }
+  return { imported };
 }

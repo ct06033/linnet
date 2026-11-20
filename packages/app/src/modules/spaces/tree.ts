@@ -79,6 +79,17 @@ export function addableRooms(spaceId: string, rooms: RoomSummary[]): RoomSummary
   return rooms.filter((r) => !r.isSpace && !r.isDM && !r.invite && r.roomId !== spaceId && !linked.has(r.roomId));
 }
 
+/** W14 item 6: favourited non-space rooms (invites keep the Rooms list UI). */
+export function favouriteRooms(rooms: RoomSummary[]): RoomSummary[] {
+  return rooms.filter((r) => r.favourite && !r.isSpace && !r.invite);
+}
+
+/** W14 item 5: DMs whose partner is in the given member set — a group view
+ *  shows the people you share, so their DM threads land here. */
+export function dmsWithMembers(rooms: RoomSummary[], memberIds: Set<string>): RoomSummary[] {
+  return rooms.filter((r) => r.isDM && !r.invite && Boolean(r.dmUserId) && memberIds.has(r.dmUserId!));
+}
+
 /** True when roomId is currently a DIRECT active child of spaceId (drives the
  *  per-row "remove from space" affordance — folded grandchildren belong to
  *  their nested space, not this one). */

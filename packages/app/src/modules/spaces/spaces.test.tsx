@@ -101,7 +101,13 @@ describe("W5b spaces", () => {
     render(<App />);
     await waitForRooms();
     fireEvent.click(screen.getByRole("button", { name: "Space Work" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Add room to space" }));
+    // W14 item 2: "+ Room" now lives at the BOTTOM of the list, not the header
+    const add = await screen.findByRole("button", { name: "+ Room" });
+    const bottom = document.querySelector(".roomlist-bottom")!;
+    expect(bottom.contains(add)).toBe(true);
+    const scroll = document.querySelector(".roomlist-scroll")!;
+    expect(bottom.compareDocumentPosition(scroll) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+    fireEvent.click(add);
     const dialog = await screen.findByRole("dialog", { name: "Add existing room" });
     expect(dialog.textContent).toContain("free");
     fireEvent.click(screen.getByRole("button", { name: "free" }));

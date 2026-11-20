@@ -3,7 +3,7 @@
  * a mocked adapter, banner statuses, RoomView wiring (banner click + UTD
  * help link) against the fake homeserver.
  */
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, act } from "@testing-library/react";
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { MatrixClient } from "matrix-js-sdk";
@@ -20,6 +20,7 @@ import { App } from "../../App.js";
 import { setSessionManagerForTests } from "../../session-context.js";
 import { wizardInitial, wizardReduce, type WizardStep } from "./state.js";
 import { restoreInitial, restoreReduce, type RestoreStep } from "./state.js";
+import { unlockInitial, unlockReduce, type UnlockStep } from "./state.js";
 import { SecuritySheet, SecurityBanner, type SecurityAdapter, type VerifyHandle } from "./Security.js";
 import type { SecurityStatus } from "./state.js";
 
@@ -80,6 +81,37 @@ describe("W5a restore reducer", () => {
   });
 });
 
+describe("W14 unlock reducer", () => {
+  it("walks route -> input -> working -> progress -> done(imported)", () => {
+    let s: UnlockStep = unlockReduce(unlockInitial, { t: "pick", route: "passphrase" });
+    expect(s.step).toBe("input");
+    s = unlockReduce(s, { t: "value", value: "right passphrase here" });
+    s = unlockReduce(s, { t: "submit" });
+    expect(s.step).toBe("working");
+    s = unlockReduce(s, { t: "progress", total: 12, imported: 5 });
+    expect(s.step).toBe("progress");
+    if (s.step !== "progress") throw new Error("unreachable");
+    expect(s.total).toBe(12);
+    expect(s.imported).toBe(5);
+    s = unlockReduce(s, { t: "done", imported: 12 });
+    expect(s).toEqual({ step: "done", imported: 12 });
+  });
+
+  it("empty input cannot submit; error keeps params for retry; again resets", () => {
+    let s: UnlockStep = unlockReduce(unlockInitial, { t: "pick", route: "key" });
+    s = unlockReduce(s, { t: "submit" });
+    expect(s.step).toBe("input"); // empty value blocked
+    s = unlockReduce(s, { t: "value", value: "Key ABC" });
+    s = unlockReduce(s, { t: "submit" });
+    s = unlockReduce(s, { t: "fail", message: "wrong passphrase or recovery key" });
+    expect(s.step).toBe("error");
+    s = unlockReduce(s, { t: "retry" });
+    expect(s).toEqual({ step: "working", route: "key", value: "Key ABC" });
+    s = unlockReduce(s, { t: "fail", message: "boom" });
+    expect(unlockReduce(s, { t: "again" })).toEqual({ step: "route" });
+  });
+});
+
 // ---------------------------------------------------------------- sheet UI
 
 function mockAdapter(over: Partial<SecurityAdapter> = {}): SecurityAdapter & { calls: string[] } {
@@ -105,8 +137,13 @@ function mockAdapter(over: Partial<SecurityAdapter> = {}): SecurityAdapter & { c
       calls.push("restore-key");
       return 4;
     },
+    async unlock({ onProgress }) {
+      calls.push("unlock");
+      onProgress({ total: 4, imported: 4 });
+      return 4;
+    },
     async status(): Promise<SecurityStatus> {
-      return { cryptoAvailable: true, ready, backupEnabled: true, backupCount: 7 };
+      return { cryptoAvailable: true, ready, ssssReady: ready, crossSigningReady: ready, backupEnabled: true, backupCount: 7 };
     },
     async runBackup() {
       calls.push("runBackup");
@@ -329,12 +366,127 @@ describe("W5a SecuritySheet", () => {
   });
 });
 
+// ---------------------------------------------------------------- W14 unlock
+// Accounts that ALREADY have Secure Secret Storage must NOT be offered the
+// setup wizard (that was the "getSecretStorageKey callback returned falsey"
+// crash) — they get the unlock-session nudge + flow instead.
+
+function lockedSsssStatus(unlocked: boolean): SecurityStatus {
+  return {
+    cryptoAvailable: true, ready: unlocked, ssssReady: true, crossSigningReady: unlocked,
+    backupEnabled: true, backupCount: unlocked ? 6 : 0,
+  };
+}
+
+describe("W14 SecuritySheet unlock-session", () => {
+  it("ssssReady && !ready: unlock nudge replaces the setup wizard", async () => {
+    let unlocked = false;
+    const adapter = mockAdapter({ status: async () => lockedSsssStatus(unlocked) });
+    render(<SecuritySheet client={anyClient} adapter={adapter} onClose={() => undefined} />);
+    const nudge = await screen.findByTestId("ssss-warning");
+    expect(nudge.textContent).toContain("already has Secure Secret Storage");
+    expect(screen.getByTestId("unlock-session")).toBeTruthy();
+    expect(screen.queryByTestId("start-setup")).toBeNull();
+    // "Recover encrypted history" stays available for unlocked sessions too
+    expect(screen.getByTestId("start-recover")).toBeTruthy();
+    expect(unlocked).toBe(false);
+  });
+
+  it("!ssssReady keeps the setup wizard (no unlock nudge)", async () => {
+    const adapter = mockAdapter({
+      status: async () => ({
+        cryptoAvailable: true, ready: false, ssssReady: false, crossSigningReady: false,
+        backupEnabled: false, backupCount: null,
+      }),
+    });
+    render(<SecuritySheet client={anyClient} adapter={adapter} onClose={() => undefined} />);
+    await screen.findByTestId("start-setup");
+    expect(screen.queryByTestId("unlock-session")).toBeNull();
+    expect(screen.queryByTestId("ssss-warning")).toBeNull();
+  });
+
+  it("happy flow: nudge -> passphrase -> progress -> done(imported); close refreshes to ready", async () => {
+    let unlocked = false;
+    let release!: () => void;
+    const adapter = mockAdapter({
+      status: async () => lockedSsssStatus(unlocked),
+      unlock: async ({ secret, onProgress }) => {
+        expect(secret).toEqual({ passphrase: "right passphrase here" });
+        onProgress({ total: 6, imported: 2 });
+        return new Promise<number>((res) => {
+          release = () => {
+            unlocked = true;
+            res(6);
+          };
+        });
+      },
+    });
+    render(<SecuritySheet client={anyClient} adapter={adapter} onClose={() => undefined} />);
+    fireEvent.click(await screen.findByTestId("unlock-session"));
+    fireEvent.click(screen.getByTestId("unlock-route-pass"));
+    expect(screen.getByLabelText("Security passphrase")).toBeTruthy();
+    fireEvent.change(screen.getByTestId("unlock-input"), { target: { value: "right passphrase here" } });
+    fireEvent.click(screen.getByTestId("unlock-go"));
+    const prog = await screen.findByTestId("unlock-progress");
+    expect(prog.textContent).toContain("Importing 2/6");
+    await act(async () => {
+      release();
+    });
+    const done = await screen.findByTestId("unlock-done");
+    expect(done.textContent).toContain("Unlocked");
+    expect(done.textContent).toContain("Imported 6");
+    fireEvent.click(screen.getByTestId("unlock-close"));
+    await waitFor(() => expect(screen.getByTestId("security-status").textContent).toContain("on"));
+  });
+
+  it("recovery-key route: text input + right secret shape", async () => {
+    const adapter = mockAdapter({
+      status: async () => lockedSsssStatus(false),
+      unlock: async ({ secret }) => {
+        expect(secret).toEqual({ recoveryKey: "foo bar key" });
+        return 3;
+      },
+    });
+    render(<SecuritySheet client={anyClient} adapter={adapter} onClose={() => undefined} />);
+    fireEvent.click(await screen.findByTestId("unlock-session"));
+    fireEvent.click(screen.getByTestId("unlock-route-key"));
+    const input = screen.getByLabelText("Recovery key") as HTMLInputElement;
+    expect(input.type).toBe("text");
+    fireEvent.change(screen.getByTestId("unlock-input"), { target: { value: "foo bar key" } });
+    fireEvent.click(screen.getByTestId("unlock-go"));
+    expect((await screen.findByTestId("unlock-done")).textContent).toContain("Imported 3");
+  });
+
+  it("wrong secret shows the reason + retry re-runs and succeeds", async () => {
+    let first = true;
+    const adapter = mockAdapter({
+      status: async () => lockedSsssStatus(false),
+      unlock: async () => {
+        if (first) {
+          first = false;
+          throw new Error("wrong passphrase or recovery key");
+        }
+        return 3;
+      },
+    });
+    render(<SecuritySheet client={anyClient} adapter={adapter} onClose={() => undefined} />);
+    fireEvent.click(await screen.findByTestId("unlock-session"));
+    fireEvent.click(screen.getByTestId("unlock-route-pass"));
+    fireEvent.change(screen.getByTestId("unlock-input"), { target: { value: "typo passphrase" } });
+    fireEvent.click(screen.getByTestId("unlock-go"));
+    const err = await screen.findByTestId("unlock-error");
+    expect(err.textContent).toContain("wrong passphrase or recovery key");
+    fireEvent.click(screen.getByTestId("unlock-retry"));
+    expect((await screen.findByTestId("unlock-done")).textContent).toContain("Imported 3");
+  });
+});
+
 describe("W5a banner", () => {
   it("maps status to labels", () => {
     const { unmount } = render(
       <SecurityBanner
         encrypted
-        status={{ cryptoAvailable: true, ready: true, backupEnabled: true, backupCount: 1 }}
+        status={{ cryptoAvailable: true, ready: true, ssssReady: true, crossSigningReady: true, backupEnabled: true, backupCount: 1 }}
         onClick={() => undefined}
       />,
     );
@@ -343,16 +495,34 @@ describe("W5a banner", () => {
     render(
       <SecurityBanner
         encrypted
-        status={{ cryptoAvailable: true, ready: false, backupEnabled: false, backupCount: null }}
+        status={{ cryptoAvailable: true, ready: false, ssssReady: false, crossSigningReady: false, backupEnabled: false, backupCount: null }}
         onClick={() => undefined}
       />,
     );
     expect(screen.getByTestId("security-banner").textContent).toContain("Set up encryption");
   });
 
-  it("non-encrypted room shows nothing", () => {
-    render(<SecurityBanner encrypted={false} status={null} onClick={() => undefined} />);
-    expect(screen.queryByTestId("security-banner")).toBeNull();
+  it("non-encrypted room shows a LOUD red badge", () => {
+    const { container } = render(<SecurityBanner encrypted={false} status={null} onClick={() => undefined} />);
+    const badge = screen.getByTestId("security-banner");
+    expect(badge.textContent).toContain("Not encrypted");
+    expect(badge.className).toContain("off");
+    // SVG mark, not an emoji (emoji cannot be colored)
+    expect(badge.querySelector("svg.lock-off")).toBeTruthy();
+    expect(container.textContent).not.toContain("🔒");
+  });
+
+  it("encrypted ready shows a green CLOSED padlock, no emoji", () => {
+    render(
+      <SecurityBanner
+        encrypted
+        status={{ cryptoAvailable: true, ready: true, ssssReady: true, crossSigningReady: true, backupEnabled: true, backupCount: 1 }}
+        onClick={() => undefined}
+      />,
+    );
+    const badge = screen.getByTestId("security-banner");
+    expect(badge.querySelector("svg.lock-on")).toBeTruthy();
+    expect(badge.textContent).not.toContain("🔒");
   });
 });
 
@@ -409,7 +579,10 @@ describe("W5a room wiring", () => {
   it("banner appears in encrypted room; click opens the sheet (degraded honestly without crypto)", async () => {
     await openSecureRoom();
     const banner = await screen.findByTestId("security-banner");
-    expect(banner.textContent).toContain("🔒");
+    // W14: SVG padlock mark, not the emoji (which cannot be colored)
+    expect(banner.querySelector("svg.lock")).toBeTruthy();
+    expect(banner.textContent).not.toContain("🔒");
+    expect(banner.textContent).toContain("Crypto unavailable");
     fireEvent.click(banner);
     const sheet = await screen.findByTestId("security-sheet");
     expect(sheet.textContent).toContain("Security & encryption");

@@ -133,6 +133,7 @@ Legend: **M0** = pre-alpha plumbing, **MVP** = v0.1 usable-daily, **P1** = v0.2â
 | Reply threading affordances; forwarded/matrix URI handling | MVP |
 | Message pinning + pinned list | P1 |
 | URL previews (client-fetched OG), inline PDF viewer, syntax copy/download chrome | P1 |
+| Inline video playback for YouTube links (privacy facade, nocookie iframe on click) | P1 âœ… landed W14 (2026-11-20) |
 | Jump-to-date (MSC3030), message search over local index | P1 |
 | Live location sharing (MSC3488) | P2 |
 | LaTeX/KaTeX | P2 |

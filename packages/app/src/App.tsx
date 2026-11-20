@@ -12,8 +12,22 @@ import { Login } from "./screens/Login.js";
 import { RoomView } from "./modules/messages/RoomView.js";
 import { SpaceRail } from "./modules/spaces/SpaceRail.js";
 import { addRoomToSpace, createRoom, createSpace, leaveAndMaybeForget, removeRoomFromSpace } from "./modules/spaces/actions.js";
+import { LockMark } from "./modules/security/Security.js";
 import { JoinRoomDialog, NewRoomDialog, NewSpaceDialog } from "./modules/dialogs.js";
-import { addableRooms, homeRooms, isDirectChild, spaceEntries, spacesForRail } from "./modules/spaces/tree.js";
+import {
+  addableRooms,
+  dmsWithMembers,
+  favouriteRooms,
+  homeRooms,
+  isDirectChild,
+  spaceEntries,
+  spacesForRail,
+} from "./modules/spaces/tree.js";
+import { SectionHeader, useCollapsedSections } from "./modules/roomlist/sections.js";
+import { Avatar } from "./modules/ui/avatar.js";
+import { PaneGutter, usePanes } from "./modules/settings/panes.js";
+import { uploadBytes } from "./modules/media/core.js";
+import type { MatrixClient } from "matrix-js-sdk";
 import { NotificationEngine, makeNotifierPort } from "./modules/notify/engine.js";
 import { CallBanner } from "./modules/call/CallUi.js";
 import { ACCENTS, DENSITIES, loadAppearance, mountAppearance, type Appearance } from "./modules/settings/appearance.js";
@@ -56,6 +70,10 @@ export function App(): ReactNode {
   useClickAway(ctxMenuRef, () => setRowMenu(null), rowMenu !== null);
   useClickAway(paletteRef, () => setPaletteOpen(false), paletteOpen);
   useClickAway(railAddRef, () => setRailAddOpen(false), railAddOpen);
+  // W14 item 7: collapsible People/Rooms/Favourites/nested sections
+  const { collapsed, toggle: toggleSection } = useCollapsedSections();
+  // W14 item 14: resizable rail/list panels
+  const { startDrag } = usePanes();
   useEffect(() => {
     applyAppearance.current = mountAppearance();
   }, []);
@@ -145,6 +163,31 @@ export function App(): ReactNode {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sm, activeId, phase]);
 
+  // W14 item 11: own profile avatar (uploaded via the account menu)
+  const [myAvatar, setMyAvatar] = useState<string | null>(null);
+  useEffect(() => {
+    if (!clientForView) return;
+    const me = clientForView.getUserId();
+    const u = me ? clientForView.getUser(me) : undefined;
+    setMyAvatar((u as { avatarUrl?: string } | undefined)?.avatarUrl ?? null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clientForView]);
+  function uploadProfileAvatar(file: File): void {
+    if (!clientForView) return;
+    void (async () => {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const url = await uploadBytes(clientForView, bytes, file.type || "image/png");
+      await clientForView.setAvatarUrl(url);
+      setMyAvatar(url);
+    })().catch((err) => console.warn("linnet: profile avatar upload failed", err));
+  }
+  function removeProfileAvatar(): void {
+    void clientForView
+      ?.setAvatarUrl("")
+      .then(() => setMyAvatar(null))
+      .catch(() => undefined);
+  }
+
   // W6: notification engine — lives with the active client, dies on switch
   const focusedRef = useRef<string | null>(null);
   focusedRef.current = selectedRoom;
@@ -171,6 +214,30 @@ export function App(): ReactNode {
   const homeList = homeRooms(rooms).filter((r) => !r.isDM && !r.invite);
   const entries = activeSpace ? spaceEntries(activeSpace.roomId, rooms) : [];
   const addable = activeSpace ? addableRooms(activeSpace.roomId, rooms) : [];
+  // W14 item 6: favourites show on EVERY view, always at the top
+  const favList = favouriteRooms(rooms);
+  // W14 item 5: a group view also carries the DMs you share with its people
+  const spaceDms = useMemo(() => {
+    if (!clientForView || !activeSpace) return [] as RoomSummary[];
+    const memberIds = new Set<string>();
+    const scope = [activeSpace.roomId];
+    for (const e of spaceEntries(activeSpace.roomId, rooms)) {
+      if (e.kind === "room") scope.push(e.room.roomId);
+      else {
+        scope.push(e.space.roomId);
+        for (const r of e.rooms) scope.push(r.roomId);
+      }
+    }
+    for (const rid of scope) {
+      for (const m of clientForView.getRoom(rid)?.getJoinedMembers() ?? []) memberIds.add(m.userId);
+    }
+    return dmsWithMembers(rooms, memberIds);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clientForView, activeSpace?.roomId, rooms]);
+  // W14 item 6: optimistic flip lands via SessionManager.setFavourite's refresh
+  function toggleFav(roomId: string, next: boolean): void {
+    void sm.setFavourite(roomId, next).catch((err) => console.warn("linnet: favourite failed", err));
+  }
 
   if (phase === "boot") {
     return <div className="boot">restoring sessions…</div>;
@@ -187,6 +254,20 @@ export function App(): ReactNode {
   }
 
   const activeName = accounts.find((a) => a.accountId === activeId)?.userId ?? "account";
+  const rowProps = {
+    client: clientForView,
+    selectedRoom,
+    onSelect: setSelectedRoom,
+    onOpenMenu: openRowMenu,
+    onFavourite: toggleFav,
+  } as const;
+  const favBlock =
+    favList.length > 0 ? (
+      <>
+        <SectionHeader id="fav" label="Favourites" collapsed={!!collapsed.fav} onToggle={toggleSection} />
+        {!collapsed.fav && favList.map((r) => <Row key={r.roomId} r={r} {...rowProps} />)}
+      </>
+    ) : null;
 
   return (
     <div className="shell">
@@ -201,6 +282,30 @@ export function App(): ReactNode {
           </div>
           {menuOpen && (
             <div className="account-menu" role="menu">
+            {/* W14 item 11: profile avatar — sets the mxc every room's member
+                event will carry (Synapse propagates profile changes). */}
+            <div className="profile-row" role="group" aria-label="Profile">
+              <span className="lbl">You</span>
+              <Avatar client={clientForView} mxc={myAvatar} name={activeName} size={24} />
+              <label className="avatar-pick" title="Upload a profile picture">
+                <input
+                  type="file"
+                  accept="image/*"
+                  aria-label="Profile avatar file"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) uploadProfileAvatar(f);
+                    e.target.value = "";
+                  }}
+                />
+                <span>Change…</span>
+              </label>
+              {myAvatar && (
+                <button className="danger" aria-label="Remove profile avatar" onClick={removeProfileAvatar}>
+                  ✕
+                </button>
+              )}
+            </div>
             {accounts.map((a) => (
               <div key={a.accountId} className="menu-row">
                 <button
@@ -298,47 +403,44 @@ export function App(): ReactNode {
           </button>
         </div>
       </nav>
+      <PaneGutter pane="rail" startDrag={startDrag} label="Resize spaces rail" />
 
       <aside className="roomlist" aria-label="Rooms">
+        <div className="roomlist-scroll">
         {activeSpaceId === null ? (
           <>
-            <h3 className="section-heading">People</h3>
-            {dmRooms.length === 0 && <p className="empty">no DMs</p>}
-            {dmRooms.map((r) => (
-              <Row
-                key={r.roomId}
-                r={r}
-                selected={selectedRoom === r.roomId}
-                onSelect={setSelectedRoom}
-                onOpenMenu={openRowMenu}
-              />
-            ))}
-            <h3 className="section-heading">Rooms</h3>
-            {invites.map((r) => (
-              <Row
-                key={r.roomId}
-                r={r}
-                selected={selectedRoom === r.roomId}
-                onSelect={setSelectedRoom}
-                onOpenMenu={openRowMenu}
-                onJoin={
-                  clientForView
-                    ? () => {
-                        void clientForView.joinRoom(r.roomId).catch(() => undefined);
-                      }
-                    : undefined
-                }
-              />
-            ))}
-            {homeList.map((r) => (
-              <Row
-                key={r.roomId}
-                r={r}
-                selected={selectedRoom === r.roomId}
-                onSelect={setSelectedRoom}
-                onOpenMenu={openRowMenu}
-              />
-            ))}
+            {favBlock}
+            <SectionHeader id="people" label="People" collapsed={!!collapsed.people} onToggle={toggleSection} />
+            {!collapsed.people && (
+              <>
+                {dmRooms.length === 0 && <p className="empty">no DMs</p>}
+                {dmRooms.map((r) => (
+                  <Row key={r.roomId} r={r} {...rowProps} />
+                ))}
+              </>
+            )}
+            <SectionHeader id="rooms" label="Rooms" collapsed={!!collapsed.rooms} onToggle={toggleSection} />
+            {!collapsed.rooms && (
+              <>
+                {invites.map((r) => (
+                  <Row
+                    key={r.roomId}
+                    r={r}
+                    {...rowProps}
+                    onJoin={
+                      clientForView
+                        ? () => {
+                            void clientForView.joinRoom(r.roomId).catch(() => undefined);
+                          }
+                        : undefined
+                    }
+                  />
+                ))}
+                {homeList.map((r) => (
+                  <Row key={r.roomId} r={r} {...rowProps} />
+                ))}
+              </>
+            )}
             {rooms.length === 0 && (
               <p className="empty">{syncStatus?.phase === "prepared" ? "no rooms yet" : "syncing…"}</p>
             )}
@@ -347,10 +449,8 @@ export function App(): ReactNode {
           <>
             <div className="space-head">
               <h3>{activeSpace?.name}</h3>
-              <button aria-label="Add room to space" onClick={() => setAddOpen((v) => !v)}>
-                + Room
-              </button>
             </div>
+            {favBlock}
             {addOpen && (
               <div
                 className="dialog-scrim"
@@ -374,38 +474,66 @@ export function App(): ReactNode {
                 </div>
               </div>
             )}
-            {entries.map((e) =>
-              e.kind === "room" ? (
-                <Row
-                  key={e.room.roomId}
-                  r={e.room}
-                  selected={selectedRoom === e.room.roomId}
-                  onSelect={setSelectedRoom}
-                  onOpenMenu={openRowMenu}
-                />
-              ) : (
-                <div key={e.space.roomId} className="nested-space">
-                  <h4>{e.space.name}</h4>
-                  {e.rooms.map((r) => (
-                    <Row
-                      key={r.roomId}
-                      r={r}
-                      selected={selectedRoom === r.roomId}
-                      onSelect={setSelectedRoom}
-                      onOpenMenu={openRowMenu}
+            <SectionHeader
+              id={`sp:${activeSpaceId}`}
+              label="Rooms"
+              collapsed={!!collapsed[`sp:${activeSpaceId}`]}
+              onToggle={toggleSection}
+            />
+            {!collapsed[`sp:${activeSpaceId}`] &&
+              entries.map((e) =>
+                e.kind === "room" ? (
+                  <Row key={e.room.roomId} r={e.room} {...rowProps} />
+                ) : (
+                  <div key={e.space.roomId} className="nested-space">
+                    <SectionHeader
+                      id={`nested:${e.space.roomId}`}
+                      level={4}
+                      label={e.space.name}
+                      collapsed={!!collapsed[`nested:${e.space.roomId}`]}
+                      onToggle={toggleSection}
                     />
-                  ))}
-                </div>
-              ),
+                    {!collapsed[`nested:${e.space.roomId}`] &&
+                      e.rooms.map((r) => <Row key={r.roomId} r={r} {...rowProps} />)}
+                  </div>
+                ),
+              )}
+            {/* W14 item 5: DMs with people who share this space */}
+            {spaceDms.length > 0 && (
+              <>
+                <SectionHeader
+                  id={`dms:${activeSpaceId}`}
+                  label="People"
+                  collapsed={!!collapsed[`dms:${activeSpaceId}`]}
+                  onToggle={toggleSection}
+                />
+                {!collapsed[`dms:${activeSpaceId}`] &&
+                  spaceDms.map((r) => <Row key={r.roomId} r={r} {...rowProps} />)}
+              </>
             )}
-            {entries.length === 0 && !addOpen && (
+            {entries.length === 0 && spaceDms.length === 0 && !addOpen && (
               <p className="empty">
                 This space is empty — <button onClick={() => setAddOpen(true)}>add rooms</button>
               </p>
             )}
           </>
         )}
+        </div>
+        {/* W14 item 2: group views pin "+ Room" to the bottom, like the rail's + */}
+        {activeSpaceId !== null && (
+          <div className="roomlist-bottom">
+            <button
+              className="roomlist-add"
+              aria-haspopup="dialog"
+              aria-expanded={addOpen}
+              onClick={() => setAddOpen((v) => !v)}
+            >
+              + Room
+            </button>
+          </div>
+        )}
       </aside>
+      <PaneGutter pane="roomlist" startDrag={startDrag} label="Resize room list" />
 
       <main className="timeline" id="linnet-main">
         {/* W12 restart-sync gap: sync errors must be VISIBLE even when the
@@ -463,6 +591,18 @@ export function App(): ReactNode {
               style={{ left: rowMenu.x, top: rowMenu.y }}
               onClick={(e) => e.stopPropagation()}
             >
+              {/* W14 item 6 */}
+              {!target.invite && (
+                <button
+                  role="menuitem"
+                  onClick={() => {
+                    toggleFav(target.roomId, !target.favourite);
+                    close();
+                  }}
+                >
+                  {target.favourite ? "☆ Unfavourite" : "★ Favourite"}
+                </button>
+              )}
               {target.invite ? (
                 <>
                   <button
@@ -561,29 +701,49 @@ export function App(): ReactNode {
 
 function Row({
   r,
-  selected,
+  client,
+  selectedRoom,
   onSelect,
   onOpenMenu,
   onJoin,
+  onFavourite,
 }: {
   r: RoomSummary;
-  selected: boolean;
+  client: MatrixClient | null;
+  selectedRoom: string | null;
   onSelect: (id: string) => void;
-  /** W12 item 8: opens the row context menu (the ONLY leave/decline path now) */
+  /** W12 item 8: opens the row context menu (leave/decline/remove path) */
   onOpenMenu: (roomId: string, x: number, y: number) => void;
   onJoin?: () => void;
+  /** W14 item 6: star toggle (standard m.favourite tag) */
+  onFavourite: (roomId: string, next: boolean) => void;
 }): ReactNode {
   return (
     <button
-      className={`row${selected ? " selected" : ""}`}
-      aria-current={selected ? "true" : undefined}
+      className={`row${selectedRoom === r.roomId ? " selected" : ""}`}
+      aria-current={selectedRoom === r.roomId ? "true" : undefined}
       onClick={() => onSelect(r.roomId)}
       onContextMenu={(e) => {
         e.preventDefault();
         onOpenMenu(r.roomId, e.clientX, e.clientY);
       }}
     >
+      {!r.isSpace && <LockMark e2ee={r.e2ee} labeled />}
+      {/* W14 item 11: real avatars in the list fall back to initials */}
+      <Avatar client={client} mxc={r.avatarUrl} name={r.name} size={22} className="row-avatar" />
       <span className="name">{r.name}</span>
+      {/* W14 item 13: topic ghosted beside the name */}
+      {r.topic && (
+        <span className="row-topic" title={r.topic}>
+          {r.topic}
+        </span>
+      )}
+      {/* W14 item 4: membership indicator for rooms (DMs are always two) */}
+      {!r.isDM && !r.isSpace && r.memberCount > 0 && (
+        <span className="member-count" title={`${r.memberCount} members`} aria-label={`${r.memberCount} members`}>
+          👥{r.memberCount}
+        </span>
+      )}
       {r.invite && <span className="invite">invite</span>}
       {r.unread > 0 && <span className="pill">{r.unread}</span>}
       {onJoin && (
@@ -599,6 +759,18 @@ function Row({
           Join
         </span>
       )}
+      <span
+        role="button"
+        className={`fav-star${r.favourite ? " on" : ""}`}
+        aria-label={`${r.favourite ? "Unfavourite" : "Favourite"} ${r.name}`}
+        aria-pressed={r.favourite}
+        onClick={(e) => {
+          e.stopPropagation();
+          onFavourite(r.roomId, !r.favourite);
+        }}
+      >
+        ★
+      </span>
       <span
         role="button"
         className="row-menu"

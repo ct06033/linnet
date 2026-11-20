@@ -29,6 +29,7 @@ export type SessionRow = {
 import {
   wizardInitial, wizardReduce, type WizardStep,
   restoreInitial, restoreReduce, type RestoreStep,
+  unlockInitial, unlockReduce, type UnlockStep,
   probeStatus, type SecurityStatus, autoPassphrase,
 } from "./state.js";
 
@@ -36,6 +37,18 @@ export interface SecurityAdapter {
   bootstrap(opts: { client: MatrixClient; userId: string; password: string; passphrase: string }): Promise<string>;
   restorePassphrase(client: MatrixClient, passphrase: string, onProgress: (p: { total?: number; imported?: number }) => void): Promise<number>;
   restoreRecoveryKey(client: MatrixClient, key: string, onProgress: (p: { total?: number; imported?: number }) => void): Promise<number>;
+  /**
+   * W14 unlock-session: an account that ALREADY has Secure Secret Storage
+   * unlocks THIS session with the existing passphrase/recovery key — imports
+   * the cross-signing identity from 4S + restores the key backup. Returns the
+   * imported decryption-key count. Fixes the "getSecretStorageKey callback
+   * returned falsey" crash path (core unlockWithSecret).
+   */
+  unlock(opts: {
+    client: MatrixClient;
+    secret: { passphrase: string } | { recoveryKey: string };
+    onProgress: (p: { total?: number; imported?: number }) => void;
+  }): Promise<number>;
   status(client: MatrixClient): Promise<SecurityStatus>;
   runBackup(client: MatrixClient): Promise<void>;
   sessions(client: MatrixClient): Promise<SessionRow[]>;
@@ -46,19 +59,73 @@ export interface SecurityAdapter {
   onIncomingRequest(client: MatrixClient, cb: (h: VerifyHandle, request: unknown) => void): () => void;
 }
 
+export type LockTone = "on" | "warn" | "off";
+
+/**
+ * W14-VISIBILITY: the padlock SVG shared by the room/DM list rows and the
+ * header badge. Emoji cannot be colored, so these are real SVG marks driven
+ * by currentColor — the CSS classes lock-on (green) / lock-warn (amber) /
+ * lock-off (red) supply the hues. `labeled` is used by the list rows
+ * (role=img + aria-label/title + data-testid lock-on/lock-off per spec);
+ * badge instances stay decorative (aria-hidden) because the button text
+ * already names them.
+ */
+export function LockMark(props: { e2ee: boolean; tone?: LockTone; labeled?: boolean }): ReactNode {
+  const tone = props.tone ?? (props.e2ee ? "on" : "off");
+  const label = props.e2ee ? "Encrypted" : "Not encrypted";
+  const a11y = props.labeled
+    ? {
+        role: "img" as const,
+        "aria-label": label,
+        title: label,
+        "data-testid": props.e2ee ? "lock-on" : "lock-off",
+      }
+    : { "aria-hidden": true };
+  return (
+    <svg className={`lock lock-${tone}`} viewBox="0 0 16 16" fill="none" {...a11y}>
+      <rect x="3" y="7.2" width="10" height="7.3" rx="1.8" fill="currentColor" />
+      {props.e2ee ? (
+        // CLOSED padlock: the shackle re-enters the body
+        <path d="M5.4 7.6V4.9a2.6 2.6 0 0 1 5.2 0v2.7" stroke="currentColor" strokeWidth="1.7" />
+      ) : (
+        // OPEN padlock: the right shackle leg is unlatched (stops above body)
+        <path d="M5.4 7.6V4.9a2.6 2.6 0 0 1 5.2 0v.9" stroke="currentColor" strokeWidth="1.7" />
+      )}
+    </svg>
+  );
+}
+
 export function SecurityBanner(props: { status: SecurityStatus | null; encrypted: boolean; onClick: () => void }): ReactNode {
-  if (!props.encrypted) return null;
+  // W14-VISIBILITY: an unencrypted room is the LOUD case — a red open-padlock
+  // "Not encrypted" badge whose click opens room settings (where encryption
+  // can be enabled). Emoji cannot be colored — real SVG marks it is.
+  if (!props.encrypted) {
+    return (
+      <button
+        className="e2ee-badge off"
+        onClick={props.onClick}
+        data-testid="security-banner"
+        title="This room is NOT encrypted — open room settings"
+      >
+        <LockMark e2ee={false} tone="off" /> Not encrypted
+      </button>
+    );
+  }
   const s = props.status;
   let cls = "off";
+  let tone: LockTone = "off";
   let text = "Encryption";
   if (s?.cryptoAvailable && s.ready === true) {
     cls = "on";
+    tone = "on";
     text = "Secured";
   } else if (s?.cryptoAvailable && s.ready === false) {
     cls = "warn";
+    tone = "warn";
     text = "Set up encryption";
   } else if (s && !s.cryptoAvailable) {
     cls = "warn";
+    tone = "warn";
     text = "Crypto unavailable";
   }
   return (
@@ -68,7 +135,7 @@ export function SecurityBanner(props: { status: SecurityStatus | null; encrypted
       data-testid="security-banner"
       title="Room encryption status — open security center"
     >
-      🔒 {text}
+      <LockMark e2ee tone={tone} /> {text}
     </button>
   );
 }
@@ -82,7 +149,7 @@ export interface SheetProps {
 export function SecuritySheet(props: SheetProps): ReactNode {
   const { client, adapter, onClose } = props;
   const [status, setStatus] = useState<SecurityStatus | null>(null);
-  const [flow, setFlow] = useState<"none" | "setup" | "recover" | "sessions">("none");
+  const [flow, setFlow] = useState<"none" | "setup" | "recover" | "unlock" | "sessions">("none");
   const [verify, setVerify] = useState<VerifyHandle | null>(null);
   const [incoming, setIncoming] = useState(false);
 
@@ -136,7 +203,21 @@ export function SecuritySheet(props: SheetProps): ReactNode {
               )}
             </div>
 
-            {status?.cryptoAvailable && status.ready === false && (
+            {status?.cryptoAvailable && status.ready === false && status.ssssReady && (
+              // W14: account ALREADY has SSSS — offering the setup wizard here
+              // is exactly what crashed on "getSecretStorageKey callback
+              // returned falsey". Route to unlock-session instead.
+              <div className="unlock-nudge hc" data-contrast="wcag" data-position="center" data-testid="ssss-warning">
+                <p>
+                  Your account already has Secure Secret Storage, but this session is locked. Enter your
+                  security passphrase or recovery key to unlock it — your encryption identity stays the same.
+                </p>
+                <button className="primary" onClick={() => setFlow("unlock")} data-testid="unlock-session">
+                  Unlock session
+                </button>
+              </div>
+            )}
+            {status?.cryptoAvailable && status.ready === false && !status.ssssReady && (
               <button className="primary" onClick={() => setFlow("setup")} data-testid="start-setup">
                 Set up encryption
               </button>
@@ -155,6 +236,7 @@ export function SecuritySheet(props: SheetProps): ReactNode {
 
         {flow === "setup" && <SetupWizard client={client} adapter={adapter} onDone={() => { setFlow("none"); refresh(); }} />}
         {flow === "recover" && <RecoverFlow client={client} adapter={adapter} onDone={() => setFlow("none")} />}
+        {flow === "unlock" && <UnlockFlow client={client} adapter={adapter} onDone={() => { setFlow("none"); refresh(); }} />}
         {flow === "sessions" && (
           verify ? (
             <SasPanel handle={verify} incoming={incoming} onDone={() => { setVerify(null); setIncoming(false); }} />
@@ -394,6 +476,107 @@ function RecoverFlow(props: { client: MatrixClient; adapter: SecurityAdapter; on
         <div className="recover hc" data-contrast="wcag" data-testid="recover">
           <p className="err" data-testid="recover-error">{st.message}</p>
           <button onClick={() => dispatchSt({ t: "retry" })} data-testid="recover-retry">Try again</button>
+        </div>
+      );
+  }
+}
+
+/**
+ * W14 unlock-session flow — same shape as RecoverFlow, but it UNLOCKS THIS
+ * SESSION (cross-signing import from 4S + key backup restore) instead of only
+ * restoring history. Used when the probe says ssssReady && !ready: the account
+ * already has Secure Secret Storage, so the setup wizard would crash on
+ * "getSecretStorageKey callback returned falsey" (the pre-W14 bug).
+ */
+function UnlockFlow(props: { client: MatrixClient; adapter: SecurityAdapter; onDone: () => void }): ReactNode {
+  const [stRaw, setStRaw] = useState<UnlockStep>(unlockInitial);
+  const lastRun = useRef<string | null>(null);
+  function dispatchSt(ev: Parameters<typeof unlockReduce>[1]): void {
+    setStRaw((prev) => unlockReduce(prev, ev));
+  }
+  const st = stRaw ?? unlockInitial;
+  const { client, adapter } = props;
+
+  async function run(route: "passphrase" | "key", value: string): Promise<void> {
+    const onProgress = (p: { total?: number; imported?: number }) => dispatchSt({ t: "progress", ...p });
+    const id = `${route}::${value}`;
+    if (lastRun.current === id) return;
+    lastRun.current = id;
+    try {
+      const n = await adapter.unlock({
+        client,
+        secret: route === "passphrase" ? { passphrase: value } : { recoveryKey: value },
+        onProgress,
+      });
+      dispatchSt({ t: "done", imported: n });
+    } catch (e) {
+      lastRun.current = null; // allow retry to re-run with the same params
+      dispatchSt({ t: "fail", message: (e as Error).message });
+    }
+  }
+
+  // state-driven side effect: sitting on "working" (submit OR retry) runs it
+  useEffect(() => {
+    if (st.step === "working") void run(st.route, st.value);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [st.step]);
+
+  switch (st.step) {
+    case "route":
+      return (
+        <div className="unlock hc" data-contrast="wcag" data-testid="unlock">
+          <p>How do you want to unlock this session?</p>
+          <button onClick={() => dispatchSt({ t: "pick", route: "passphrase" })} data-testid="unlock-route-pass">
+            Security passphrase
+          </button>
+          <button onClick={() => dispatchSt({ t: "pick", route: "key" })} data-testid="unlock-route-key">
+            Recovery key
+          </button>
+        </div>
+      );
+    case "input":
+      return (
+        <form className="unlock hc" data-contrast="wcag" data-testid="unlock" onSubmit={(e) => e.preventDefault()}>
+          <input
+            aria-label={st.route === "key" ? "Recovery key" : "Security passphrase"}
+            type={st.route === "key" ? "text" : "password"}
+            value={st.value}
+            onChange={(e) => dispatchSt({ t: "value", value: e.target.value })}
+            data-testid="unlock-input"
+          />
+          <button
+            className="primary"
+            disabled={!st.value}
+            onClick={() => {
+              dispatchSt({ t: "submit" });
+            }}
+            data-testid="unlock-go"
+          >
+            Unlock
+          </button>
+        </form>
+      );
+    case "working":
+    case "progress":
+      return (
+        <div className="unlock hc" data-contrast="wcag" data-testid="unlock">
+          <p data-testid="unlock-progress">
+            {st.step === "progress" && st.total ? `Importing ${st.imported ?? 0}/${st.total} keys…` : "Unlocking…"}
+          </p>
+        </div>
+      );
+    case "done":
+      return (
+        <div className="unlock hc" data-contrast="wcag" data-testid="unlock">
+          <p data-testid="unlock-done">✓ Unlocked. Imported {st.imported} decryption keys.</p>
+          <button onClick={props.onDone} data-testid="unlock-close">Close</button>
+        </div>
+      );
+    case "error":
+      return (
+        <div className="unlock hc" data-contrast="wcag" data-testid="unlock">
+          <p className="err" data-testid="unlock-error">{st.message}</p>
+          <button onClick={() => dispatchSt({ t: "retry" })} data-testid="unlock-retry">Try again</button>
         </div>
       );
   }

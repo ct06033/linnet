@@ -6,6 +6,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { EventType, type MatrixClient, type MatrixEvent } from "matrix-js-sdk";
 import type { ModuleRegistry, SlashCommandContribution } from "@linnet/core";
+import { useClickAway } from "../a11y.js";
 import { mdToHtml, expandShortcodes, escapeHtml } from "./markdown.js";
 import { canNotifyRoom, detectMentions, displayNameOf } from "./model.js";
 import { bodyOf } from "./model.js";
@@ -56,7 +57,10 @@ export function Composer(props: ComposerProps): JSX.Element {
   const [pollDraft, setPollDraft] = useState<PollDraft | null>(null);
   const [showEmoji, setShowEmoji] = useState(false);
   const [mentionIdx, setMentionIdx] = useState(0);
+  // W12 item 2: the mention dropdown also honours click-away + Escape
+  const [mentionSuppressed, setMentionSuppressed] = useState(false);
   const areaRef = useRef<HTMLTextAreaElement | null>(null);
+  const composerRowRef = useRef<HTMLDivElement | null>(null);
 
   // mention autocomplete: trailing @token state
   const mentionQuery = (() => {
@@ -86,6 +90,8 @@ export function Composer(props: ComposerProps): JSX.Element {
       .filter((m) => m.userId !== myUserId)
       .slice(0, 6);
   }, [mentionQuery, client, roomId, value, myUserId]);
+  const mentionOpen = mentionOptions.length > 0 && !mentionSuppressed;
+  useClickAway(composerRowRef, () => setMentionSuppressed(true), mentionOpen);
 
   function pickMention(userId: string): void {
     const local = userId.split(":")[0]?.replace(/^@/, "") ?? userId;
@@ -123,6 +129,7 @@ export function Composer(props: ComposerProps): JSX.Element {
   function update(v: string): void {
     setValue(v);
     drafts.set(roomId, v);
+    setMentionSuppressed(false);
     if (v.trim()) void noticeTyping(client, roomId);
   }
 
@@ -426,8 +433,8 @@ export function Composer(props: ComposerProps): JSX.Element {
           </div>
         </div>
       ) : (
-        <div className="composer-row" style={{ position: "relative" }}>
-          {mentionOptions.length > 0 && (
+        <div className="composer-row" style={{ position: "relative" }} ref={composerRowRef}>
+          {mentionOpen && (
             <ul className="mention-menu" role="listbox" aria-label="Mention suggestions" data-testid="mention-menu">
               {mentionOptions.map((m, i) => (
                 <li key={m.userId}>
@@ -457,7 +464,7 @@ export function Composer(props: ComposerProps): JSX.Element {
               update(e.target.value);
             }}
             onKeyDown={(e) => {
-              if (mentionOptions.length > 0) {
+              if (mentionOpen) {
                 if (e.key === "ArrowDown" || e.key === "ArrowUp") {
                   e.preventDefault();
                   setMentionIdx((i) => (i + (e.key === "ArrowDown" ? 1 : mentionOptions.length - 1)) % mentionOptions.length);
@@ -469,6 +476,8 @@ export function Composer(props: ComposerProps): JSX.Element {
                   return;
                 }
                 if (e.key === "Escape") {
+                  // W12 item 2: Escape dismisses the mention dropdown
+                  setMentionSuppressed(true);
                   return;
                 }
               }

@@ -62,6 +62,12 @@ describe("wave-2 auth shell", () => {
     expect(screen.getAllByText("People").length).toBeGreaterThan(0);
     expect(screen.getByText("invite")).toBeTruthy(); // design-help
     expect(screen.getByText("Mel")).toBeTruthy(); // DM section
+    // W12 item 5: both section headings carry the stand-out class (styled in
+    // CSS for both themes: heavier, uppercase, accent-tinged)
+    const people = screen.getByText("People", { selector: "h3" });
+    const rooms = screen.getByText("Rooms", { selector: "h3" });
+    expect(people.className).toContain("section-heading");
+    expect(rooms.className).toContain("section-heading");
   });
 
   it("Ctrl+K palette lists module-registry commands after login", async () => {
@@ -70,5 +76,33 @@ describe("wave-2 auth shell", () => {
     await screen.findAllByText("linnet-dev");
     fireEvent.keyDown(window, { key: "k", ctrlKey: true });
     expect(await screen.findByText("/echo")).toBeTruthy();
+  });
+});
+
+// W12a regression: a failing first sync must SURFACE in the home placeholder
+// instead of hanging forever on "waiting for first sync…".
+describe("W12a sync-error surfacing", () => {
+  it("rejected token during first sync shows an actionable error, not the hang", async () => {
+    const base = createFakeHomeserver({
+      accounts: [ALICE],
+      sync: (userId) => makeSyncSnapshot({ userId, rooms: [{ roomId: "!a1:hs.test", name: "linnet-dev" }] }),
+    });
+    const broken = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (/\/sync(\?|$)/.test(url)) {
+        return new Response(JSON.stringify({ errcode: "M_UNKNOWN_TOKEN", error: "Unrecognised token", soft_logout: false }), {
+          status: 401,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return base(input, init);
+    }) as unknown as typeof globalThis.fetch;
+    setSessionManagerForTests(
+      new SessionManager({ kv: new MemoryKv(), secrets: new MemorySecrets(), fetchFn: broken }),
+    );
+    render(<App />);
+    await signIn();
+    expect(await screen.findByText(/session was rejected/i, {}, { timeout: 20000 })).toBeTruthy();
+    expect(screen.queryByText("waiting for first sync…")).toBeNull();
   });
 });

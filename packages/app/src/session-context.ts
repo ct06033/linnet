@@ -44,7 +44,12 @@ export function buildManager(overrides: {
   const kv = overrides.kv ?? (bridge?.kv ? fromBridgeKv(bridge.kv) : new MemoryKv());
   const secrets =
     overrides.secrets ?? (bridge?.secrets ? fromBridgeSecrets(bridge.secrets) : new MemorySecrets());
-  return new SessionManager({ kv, secrets, fetchFn: overrides.fetchFn });
+  // W12a E2EE-default: the product session stack boots rust crypto BEFORE the
+  // first startClient for every account (to-device room-key sharing + Megolm
+  // work from the first sync on). New rooms are created encrypted by default
+  // (spaces/actions.ts), so the client must always be able to encrypt/decrypt.
+  // Tests inject their own SessionManager directly and stay crypto-free.
+  return new SessionManager({ kv, secrets, fetchFn: overrides.fetchFn, initCrypto: true });
 }
 
 /** test seam */

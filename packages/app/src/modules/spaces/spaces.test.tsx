@@ -66,11 +66,13 @@ describe("W5b spaces", () => {
     expect(screen.getByRole("button", { name: "Home" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Space Nested" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Space Work" })).toBeTruthy();
-    // rail order is alphabetical (Nested < Work), Home first, + last
+    // rail order is alphabetical (Nested < Work), Home first; the old "+"
+    // button is gone — W12 item 12 unified it into the bottom Add control
     const names = Array.from(document.querySelectorAll("nav.rail button.space")).map((b) =>
       b.getAttribute("aria-label"),
     );
-    expect(names).toEqual(["Home", "Space Nested", "Space Work", "New space"]);
+    expect(names).toEqual(["Home", "Space Nested", "Space Work"]);
+    expect(document.querySelector("nav.rail .space.add")).toBeNull();
   });
 
   it("S8: spaces never render as room rows in Home", async () => {
@@ -112,11 +114,14 @@ describe("W5b spaces", () => {
     );
   });
 
-  it("S5: remove-from-space sends an empty-content child PUT (reprised link)", async () => {
+  it("S5: remove-from-space (via row context menu) sends an empty-content child PUT", async () => {
     render(<App />);
     await waitForRooms();
     fireEvent.click(screen.getByRole("button", { name: "Space Work" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Remove team from space" }));
+    // W12 item 8: the inline ✕ is gone — removal goes through the context menu
+    expect(document.querySelector(".row-x")).toBeNull();
+    fireEvent.click(await screen.findByRole("button", { name: "Menu for team" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Remove from space" }));
     await waitFor(() =>
       expect(
         controls.calls.find(
@@ -132,7 +137,9 @@ describe("W5b spaces", () => {
   it("S3: New space dialog creates an m.space that lands live from sync", async () => {
     render(<App />);
     await waitForRooms();
-    fireEvent.click(screen.getByRole("button", { name: "New space" }));
+    // W12 item 12: unified bottom Add control → New space (dialog unchanged)
+    fireEvent.click(screen.getByRole("button", { name: "Add space or room" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "New space" }));
     const dialog = await screen.findByRole("dialog", { name: "Create a new space" });
     fireEvent.change(dialog.querySelector("input[aria-label='Space name']") as HTMLInputElement, {
       target: { value: "Fun" },
@@ -151,5 +158,85 @@ describe("W5b spaces", () => {
     );
     // and it appears in the rail via the sync push (real flow, not optimistic UI)
     await screen.findByRole("button", { name: "Space Fun" });
+  });
+
+
+  // W12a E2EE-default UI: the Encrypt toggle ships ON; opting out (and going
+  // public, which forces it off) are the user's actions.
+  it("W12a: create dialog defaults Encrypt ON and sends m.room.encryption", async () => {
+    render(<App />);
+    await waitForRooms();
+    fireEvent.click(screen.getByRole("button", { name: "Add space or room" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "New space" }));
+    const encBox = (await screen.findByRole("checkbox", { name: "Encrypt space (E2EE)" })) as HTMLInputElement;
+    expect(encBox.checked).toBe(true);
+    const dialog = screen.getByRole("dialog", { name: "Create a new space" });
+    fireEvent.change(dialog.querySelector("input[aria-label='Space name']") as HTMLInputElement, {
+      target: { value: "Crypt" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create space" }));
+    await waitFor(() =>
+      expect(
+        controls.calls.find(
+          (c) =>
+            c.method === "POST" &&
+            c.path.endsWith("/createRoom") &&
+            JSON.stringify((c.body as Record<string, unknown>)?.["initial_state"]) ===
+              '[{"type":"m.room.encryption","state_key":"","content":{"algorithm":"m.megolm.v1.aes-sha2"}}]',
+        ),
+      ).toBeTruthy(),
+    );
+  });
+
+  it("W12a: unchecking Encrypt opts out (no initial_state on the wire)", async () => {
+    render(<App />);
+    await waitForRooms();
+    fireEvent.click(screen.getByRole("button", { name: "Add space or room" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "New space" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Encrypt space (E2EE)" }));
+    const dialog = screen.getByRole("dialog", { name: "Create a new space" });
+    fireEvent.change(dialog.querySelector("input[aria-label='Space name']") as HTMLInputElement, {
+      target: { value: "Plain" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create space" }));
+    await waitFor(() =>
+      expect(
+        controls.calls.find((c) => c.method === "POST" && c.path.endsWith("/createRoom")),
+      ).toBeTruthy(),
+    );
+    const body = controls.calls
+      .filter((c) => c.method === "POST" && c.path.endsWith("/createRoom"))
+      .map((c) => c.body as Record<string, unknown>);
+    expect(body.some((b) => b["initial_state"] !== undefined)).toBe(false);
+  });
+
+  it("W12a: Public forces the Encrypt toggle off + disabled", async () => {
+    render(<App />);
+    await waitForRooms();
+    fireEvent.click(screen.getByRole("button", { name: "Add space or room" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "New space" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Public space" }));
+    const encBox = screen.getByRole("checkbox", { name: "Encrypt space (E2EE)" }) as HTMLInputElement;
+    expect(encBox.disabled).toBe(true);
+    expect(encBox.checked).toBe(false);
+  });
+
+  it("S9: a very long space name renders IN FULL beside its initials icon (item 6)", async () => {
+    const LONG = "The Royal Society for Inordinately Long Space Names";
+    const fetchFn = createFakeHomeserver({
+      accounts: [ALICE],
+      sync: () =>
+        makeSyncSnapshot({ userId: ALICE.userId, rooms: [{ roomId: "!spL:hs.test", name: LONG, space: true }] }),
+    });
+    setSessionManagerForTests(new SessionManager({ kv: new MemoryKv(), secrets: new MemorySecrets(), fetchFn }));
+    render(<App />);
+    await signIn();
+    const btn = await screen.findByRole("button", { name: `Space ${LONG}` });
+    // full, unwrapped text in the DOM — not the old two-letter abbreviation
+    const nameSpan = btn.querySelector(".space-name");
+    expect(nameSpan?.textContent).toBe(LONG);
+    // the icon survives, next to (not instead of) the name
+    expect(btn.querySelector(".space-ico")?.textContent).toBe("TR");
+    expect(btn.className).toContain("has-name");
   });
 });

@@ -48,7 +48,9 @@ describe("W8 modal a11y", () => {
   it("F2 Tab at the last control wraps to the first (focus stays trapped)", async () => {
     render(<App />);
     await signIn();
-    fireEvent.click(screen.getByLabelText(/new space/i));
+    // W12 item 12: the space dialog now opens from the unified bottom Add menu
+    fireEvent.click(screen.getByRole("button", { name: "Add space or room" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "New space" }));
     const palette = await screen.findByRole("dialog", { name: /create a new space/i });
     const items = palette.querySelectorAll(
       'a[href], button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',

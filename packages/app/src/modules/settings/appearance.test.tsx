@@ -35,11 +35,16 @@ describe("appearance pure logic", () => {
     const loaded = loadAppearance();
     expect(loaded.mode).toBe("system"); // invalid mode falls back
     expect(loaded.accent).toBe("teal");
+    expect(loaded.density).toBe("compact"); // W12 item 3: absent density falls back
+    localStorage.setItem("linnet.appearance", JSON.stringify({ mode: "dark", accent: "rose", density: "relaxed" }));
+    expect(loadAppearance()).toEqual({ mode: "dark", accent: "rose", density: "relaxed" });
+    localStorage.setItem("linnet.appearance", JSON.stringify({ density: "wide" }));
+    expect(loadAppearance().density).toBe("compact"); // junk density rejected
     localStorage.setItem("linnet.appearance", "{not json");
-    expect(loadAppearance()).toEqual({ mode: "system", accent: "indigo" });
+    expect(loadAppearance()).toEqual({ mode: "system", accent: "indigo", density: "compact" });
   });
 
-  it("A3 applyToElement sets data-theme/accent and accent CSS var", () => {
+  it("A3 applyToElement sets data-theme/accent/density and accent CSS var", () => {
     const props: Record<string, string> = {};
     const el = {
       dataset: {} as Record<string, string | undefined>,
@@ -48,6 +53,9 @@ describe("appearance pure logic", () => {
     applyToElement(el, { mode: "dark", accent: "teal" }, false);
     expect(el.dataset.theme).toBe("dark");
     expect(el.dataset.accent).toBe("teal");
+    expect(el.dataset.density).toBe("compact"); // W12 item 3 default
+    applyToElement(el, { mode: "dark", accent: "teal", density: "relaxed" }, false);
+    expect(el.dataset.density).toBe("relaxed");
     expect(props["--accent"]).toBe(ACCENTS.find((a) => a.id === "teal")!.css);
   });
 });
@@ -97,6 +105,19 @@ describe("W8 appearance + a11y in the shell", () => {
     fireEvent.click(rose);
     expect(document.documentElement.dataset.accent).toBe("rose");
     expect(rose.getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("W4 density control sits in the theme menu, sets data-density and persists", async () => {
+    render(<App />);
+    await signIn();
+    expect(document.documentElement.dataset.density).toBe("compact");
+    fireEvent.click(screen.getByLabelText(/account menu/i));
+    fireEvent.click(screen.getByRole("button", { name: "relaxed" }));
+    expect(document.documentElement.dataset.density).toBe("relaxed");
+    expect(loadAppearance().density).toBe("relaxed");
+    fireEvent.click(screen.getByRole("button", { name: "medium" }));
+    expect(document.documentElement.dataset.density).toBe("medium");
+    expect(localStorage.getItem("linnet.appearance")).toContain("medium");
   });
 
   it("W3 a11y: skip link targets the conversation pane; rows carry aria-current", async () => {

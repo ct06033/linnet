@@ -58,6 +58,32 @@ interface LiveSession {
   client: MatrixClient;
   started: boolean;
   attached: boolean;
+  /** W12a: first-sync hang fix — error surfacing + restart-with-backoff state */
+  retryTimer?: ReturnType<typeof setTimeout>;
+  retryAttempt: number;
+  lastStatus: SyncStatus;
+}
+
+/**
+ * W12a: observable sync lifecycle. "preparing" = client started, first /sync
+ * not yet processed; "prepared" = first sync done (room list authoritative);
+ * "error" = sync failed — `fatal` (M_UNKNOWN_TOKEN) needs a re-login,
+ * otherwise SessionManager auto-restarts sync with exponential backoff.
+ */
+export type SyncPhase = "preparing" | "prepared" | "error";
+
+export interface SyncStatus {
+  phase: SyncPhase;
+  message?: string;
+  /** true = token rejected server-side; restart would loop 401 forever */
+  fatal?: boolean;
+  /** ms until the next automatic restart (when one is scheduled) */
+  retryInMs?: number;
+}
+
+/** LiveSession factory — W12a: every session starts "preparing" with retry state zeroed. */
+function mkLive(meta: AccountMetadata, client: MatrixClient): LiveSession {
+  return { meta, client, started: false, attached: false, retryAttempt: 0, lastStatus: { phase: "preparing" } };
 }
 
 /**
@@ -79,6 +105,7 @@ export class SessionManager {
   private readonly store: AccountStore;
   private readonly live = new Map<string, LiveSession>();
   private readonly listeners = new Set<(accountId: string, rooms: RoomSummary[]) => void>();
+  private readonly statusListeners = new Set<(accountId: string, status: SyncStatus) => void>();
   private readonly fetchFn?: typeof globalThis.fetch;
   activeId: string | null = null;
 
@@ -108,9 +135,14 @@ export class SessionManager {
         fetchFn: this.fetchFn,
       });
       if (this.opts.initCrypto) await ensureCrypto(client);
-      this.live.set(meta.accountId, { meta, client, started: false, attached: false });
+      this.live.set(meta.accountId, mkLive(meta, client));
       this.activeId ??= meta.accountId;
     }
+    // W12a FIX (root cause #1 of the "waiting for first sync…" hang): restore()
+    // built the clients but NOTHING ever called startSync — a cold boot with a
+    // persisted account started no sync loop at all, so ClientEvent.Sync never
+    // fired and the UI waited forever. Start sync for the active account here.
+    if (this.activeId) this.startSync(this.activeId);
     return orphans;
   }
 
@@ -207,7 +239,7 @@ export class SessionManager {
       fetchFn: this.fetchFn,
     });
     if (this.opts.initCrypto) await ensureCrypto(sessionClient);
-    this.live.set(accountId, { meta, client: sessionClient, started: false, attached: false });
+    this.live.set(accountId, mkLive(meta, sessionClient));
     await this.setActive(accountId);
     return meta;
   }
@@ -227,22 +259,106 @@ export class SessionManager {
       s.attached = true;
       s.client.on(ClientEvent.Sync, (state: SyncState) => {
         if (state === SyncState.Prepared || state === SyncState.Syncing) {
+          // W12a: first sync (or a recovery sync) succeeded — retry budget resets.
+          this.clearRetry(s);
+          if (s.lastStatus.phase !== "prepared") {
+            s.lastStatus = { phase: "prepared" };
+            for (const l of this.statusListeners) l(accountId, s.lastStatus);
+          }
           const rooms = summarize(s.client);
           for (const l of this.listeners) l(accountId, rooms);
+        } else if (state === SyncState.Error || state === SyncState.Reconnecting) {
+          // W12a FIX (root cause #2 of the hang): errors used to be swallowed —
+          // js-sdk emits SyncState.Error when the first /sync (or its filter/
+          // pushrules bootstrap) fails, and stops the loop permanently on
+          // M_UNKNOWN_TOKEN. Without handling, the UI sat on
+          // "waiting for first sync…" forever. Surface it + restart w/ backoff.
+          this.handleSyncError(accountId, s, state === SyncState.Reconnecting);
         }
       });
     }
     if (!s.started) {
       s.started = true;
+      s.lastStatus = { phase: "preparing" };
+      for (const l of this.statusListeners) l(accountId, s.lastStatus);
       // detached pending ordering → Room.getPendingEvents() works for the
       // RoomView optimistic echo; threadSupport organises MSC3440 relations
       // into Room.getThreads() (both are startClient opts in js-sdk 45 — probed)
-      s.client.startClient({
+      const start = s.client.startClient({
         initialSyncLimit: 20,
         pendingEventOrdering: PendingEventOrdering.Detached,
         threadSupport: true,
       });
+      // startClient is async in js-sdk 45; a rejection here used to be an
+      // unhandled promise that left the UI waiting forever.
+      void Promise.resolve(start).catch((err: unknown) => {
+        console.error("linnet: startClient failed", accountId, err);
+        s.started = false;
+        this.handleSyncError(accountId, s, false, err);
+      });
     }
+  }
+
+  /** Manual "retry now" for the UI (Esc from backoff waiting). */
+  retrySync(accountId = this.activeId ?? undefined): void {
+    if (!accountId) return;
+    const s = this.live.get(accountId);
+    if (!s) return;
+    this.clearRetry(s);
+    s.retryAttempt = 0;
+    if (s.started) {
+      // force a clean loop restart (js-sdk startClient() is a no-op while the
+      // client thinks it is running, even after syncApi.stop())
+      try {
+        s.client.stopClient();
+      } catch {
+        /* already stopped */
+      }
+      s.started = false;
+    }
+    this.startSync(accountId);
+  }
+
+  onSyncStatus(listener: (accountId: string, status: SyncStatus) => void): () => void {
+    this.statusListeners.add(listener);
+    return () => this.statusListeners.delete(listener);
+  }
+
+  private handleSyncError(accountId: string, s: LiveSession, reconnecting: boolean, thrown?: unknown): void {
+    const data = (s.client.getSyncStateData?.() ?? {}) as {
+      error?: { errcode?: string; httpStatus?: number; statusCode?: number; message?: string };
+    };
+    const err = data.error ?? (thrown as { errcode?: string; httpStatus?: number; statusCode?: number; message?: string } | undefined);
+    const fatal = err?.errcode === "M_UNKNOWN_TOKEN" || err?.httpStatus === 401 || err?.statusCode === 401;
+    const message = String(err?.message ?? (fatal ? "session token rejected" : "sync failed"));
+    console.error(`linnet: sync ${reconnecting ? "reconnecting (transient)" : "error"} (${accountId})`, fatal ? "FATAL" : "", err ?? thrown ?? "");
+    if (fatal) {
+      // js-sdk has already stopped the loop; restarting would 401-loop forever.
+      this.clearRetry(s);
+      s.lastStatus = { phase: "error", fatal: true, message };
+      for (const l of this.statusListeners) l(accountId, s.lastStatus);
+      return;
+    }
+    const retryInMs = Math.min(30_000, 1000 * 2 ** s.retryAttempt);
+    s.lastStatus = { phase: "error", message, ...(reconnecting ? {} : { retryInMs }) };
+    for (const l of this.statusListeners) l(accountId, s.lastStatus);
+    if (!s.retryTimer) {
+      s.retryAttempt += 1;
+      s.retryTimer = setTimeout(() => {
+        s.retryTimer = undefined;
+        // only restart if still not prepared; a healthy internal js-sdk
+        // retry may already have recovered the loop.
+        if (s.lastStatus.phase === "error" && this.live.has(accountId)) this.retrySync(accountId);
+      }, retryInMs);
+    }
+  }
+
+  private clearRetry(s: LiveSession): void {
+    if (s.retryTimer) {
+      clearTimeout(s.retryTimer);
+      s.retryTimer = undefined;
+    }
+    s.retryAttempt = 0;
   }
 
   onRooms(listener: (accountId: string, rooms: RoomSummary[]) => void): () => void {
@@ -261,6 +377,7 @@ export class SessionManager {
   async logout(accountId: string): Promise<void> {
     const s = this.live.get(accountId);
     if (s) {
+      this.clearRetry(s);
       try {
         await s.client.logout(true);
       } catch {
@@ -278,7 +395,10 @@ export class SessionManager {
   }
 
   stopAll(): void {
-    for (const s of this.live.values()) s.client.stopClient();
+    for (const s of this.live.values()) {
+      this.clearRetry(s);
+      s.client.stopClient();
+    }
   }
 }
 

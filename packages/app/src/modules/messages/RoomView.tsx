@@ -155,6 +155,18 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
     return () => window.removeEventListener("keydown", onKey);
   }, [openThread]);
 
+  // W12 item 2: Esc also closes the settings panel and the image viewer
+  useEffect(() => {
+    if (!settingsOpen && viewer === null) return;
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== "Escape") return;
+      if (viewer !== null) setViewer(null);
+      else if (settingsOpen) setSettingsOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [settingsOpen, viewer]);
+
   // autoscroll + receipts
   useEffect(() => {
     const el = scrollerRef.current;
@@ -339,7 +351,7 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
           const tlType: EventTimeline | null = room?.getLiveTimeline() ?? null;
           void tlType;
           return token ? (
-            <button onClick={() => void loadEarlier()} disabled={paginating}>
+            <button className="load-earlier" onClick={() => void loadEarlier()} disabled={paginating}>
               {paginating ? "loading…" : "Load earlier messages"}
             </button>
           ) : null;
@@ -382,11 +394,15 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
               };
               const failed = ev.status === EventStatus.NOT_SENT;
               const sending = ev.status === EventStatus.SENDING || ev.status === EventStatus.QUEUED;
+              // W12 item 10: own messages get a distinct accent-derived bubble
+              // (.mine) so they are instantly recognisable against others.
+              const mine = ev.getSender() === myUserId;
               return (
                 <div
-                  className={`row${firstInGroup ? " head" : ""}${kind === "system" ? " system" : ""}`}
+                  className={`row${firstInGroup ? " head" : ""}${kind === "system" ? " system" : ""}${mine && kind !== "system" ? " mine" : ""}`}
                   key={ev.getId() ?? `p${gi}${ei}`}
                   data-status={sending ? "sending" : failed ? "failed" : undefined}
+                  data-mine={kind === "system" ? undefined : mine ? "true" : "false"}
                 >
                   {firstInGroup && (
                     <div className="who">

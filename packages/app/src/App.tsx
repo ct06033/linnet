@@ -4,19 +4,20 @@
  * (spaces rail is still scaffold — real space graph lands with W3).
  */
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import type { AccountMetadata, ModuleRegistry, RoomSummary, SlashCommandContribution } from "@linnet/core";
+import type { AccountMetadata, ModuleRegistry, RoomSummary, SlashCommandContribution, SyncStatus } from "@linnet/core";
 import { bootRegistry } from "./modules.js";
 import { readConfig } from "./bridge.js";
 import { getSessionManager } from "./session-context.js";
 import { Login } from "./screens/Login.js";
 import { RoomView } from "./modules/messages/RoomView.js";
 import { SpaceRail } from "./modules/spaces/SpaceRail.js";
-import { addableRooms, homeRooms, spaceEntries, spacesForRail } from "./modules/spaces/tree.js";
-import { addRoomToSpace, createSpace, leaveAndMaybeForget, removeRoomFromSpace } from "./modules/spaces/actions.js";
+import { addRoomToSpace, createRoom, createSpace, leaveAndMaybeForget, removeRoomFromSpace } from "./modules/spaces/actions.js";
+import { JoinRoomDialog, NewRoomDialog, NewSpaceDialog } from "./modules/dialogs.js";
+import { addableRooms, homeRooms, isDirectChild, spaceEntries, spacesForRail } from "./modules/spaces/tree.js";
 import { NotificationEngine, makeNotifierPort } from "./modules/notify/engine.js";
 import { CallBanner } from "./modules/call/CallUi.js";
-import { ACCENTS, loadAppearance, mountAppearance, type Appearance } from "./modules/settings/appearance.js";
-import { useModalA11y } from "./modules/a11y.js";
+import { ACCENTS, DENSITIES, loadAppearance, mountAppearance, type Appearance } from "./modules/settings/appearance.js";
+import { useClickAway, useModalA11y } from "./modules/a11y.js";
 
 export function App(): ReactNode {
   const sm = getSessionManager();
@@ -29,7 +30,14 @@ export function App(): ReactNode {
   const [accounts, setAccounts] = useState<AccountMetadata[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
+  // W12a: first-sync errors must SURFACE instead of hanging on "waiting…"
+  const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  // W12 item 8: room-row context menu (leave/decline/remove live ONLY here)
+  const [rowMenu, setRowMenu] = useState<{ roomId: string; x: number; y: number } | null>(null);
+  // W12 item 12: unified bottom-of-rail add control
+  const [railAddOpen, setRailAddOpen] = useState(false);
+  const [railDialog, setRailDialog] = useState<"space" | "room" | "join" | null>(null);
   const [defaultHs, setDefaultHs] = useState<string | undefined>();
   const [selectedRoom, setSelectedRoom] = useState<string | null>(null);
   // W8 theming: applied to <html> at boot; live switchable from the account menu
@@ -38,8 +46,16 @@ export function App(): ReactNode {
   // W8 a11y: modal focus management refs (palette + add-room dialog)
   const paletteRef = useRef<HTMLDivElement | null>(null);
   const addDialogRef = useRef<HTMLDivElement | null>(null);
+  // W12 item 2: click-away (pointerdown outside) dismissal
+  const acctZoneRef = useRef<HTMLDivElement | null>(null);
+  const ctxMenuRef = useRef<HTMLDivElement | null>(null);
+  const railAddRef = useRef<HTMLDivElement | null>(null);
   useModalA11y(paletteRef, () => setPaletteOpen(false), paletteOpen);
   useModalA11y(addDialogRef, () => setAddOpen(false), addOpen);
+  useClickAway(acctZoneRef, () => setMenuOpen(false), menuOpen);
+  useClickAway(ctxMenuRef, () => setRowMenu(null), rowMenu !== null);
+  useClickAway(paletteRef, () => setPaletteOpen(false), paletteOpen);
+  useClickAway(railAddRef, () => setRailAddOpen(false), railAddOpen);
   useEffect(() => {
     applyAppearance.current = mountAppearance();
   }, []);
@@ -58,13 +74,20 @@ export function App(): ReactNode {
       setActiveId(sm.activeId);
       setPhase(acc.length > 0 ? "ready" : "login");
     })().catch((err) => console.error("linnet boot failed", err));
-    return sm.onRooms((accountId, rs) => {
+    const offRooms = sm.onRooms((accountId, rs) => {
       if (accountId !== sm.activeId) return;
       setRooms(rs);
       // W9: dock/taskbar unread count (no-op off Electron)
       const total = rs.reduce((n, r) => n + (r.membership === "join" ? r.unread : 0), 0);
       void window.linnet?.setBadge?.(total);
     });
+    const offStatus = sm.onSyncStatus((accountId, st) => {
+      if (accountId === sm.activeId) setSyncStatus(st);
+    });
+    return () => {
+      offRooms();
+      offStatus();
+    };
   }, [sm]);
 
   useEffect(() => {
@@ -75,6 +98,8 @@ export function App(): ReactNode {
       } else if (e.key === "Escape") {
         setPaletteOpen(false);
         setMenuOpen(false);
+        setRowMenu(null);
+        setRailAddOpen(false);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -96,10 +121,19 @@ export function App(): ReactNode {
     await sm.setActive(id);
     setActiveId(id);
     setRooms([]);
+    setSyncStatus(null);
     setSelectedRoom(null);
     setSpaceId(null);
     setAddOpen(false);
     setMenuOpen(false);
+    setRowMenu(null);
+  }
+
+  // W12 item 8: single entry point for the row context menu (⋯ button or right-click)
+  function openRowMenu(roomId: string, x: number, y: number): void {
+    const vw = typeof window !== "undefined" ? window.innerWidth : 1024;
+    const vh = typeof window !== "undefined" ? window.innerHeight : 768;
+    setRowMenu({ roomId, x: Math.max(4, Math.min(x, vw - 216)), y: Math.max(4, Math.min(y, vh - 170)) });
   }
 
   const clientForView = useMemo(() => {
@@ -158,14 +192,15 @@ export function App(): ReactNode {
     <div className="shell">
       <a className="skip-link" href="#linnet-main">Skip to conversation</a>
       <nav className="rail" aria-label="Spaces">
-        <div className="brand">
-          <button className="acct" aria-label="Account menu" title={activeName} onClick={() => setMenuOpen((v) => !v)}>
-            {activeName.replace(/^@/, "").slice(0, 2).toUpperCase()}
-          </button>
-          <strong>Linnet</strong>
-        </div>
-        {menuOpen && (
-          <div className="account-menu" role="menu">
+        <div className="acct-zone" ref={acctZoneRef}>
+          <div className="brand">
+            <button className="acct" aria-label="Account menu" title={activeName} onClick={() => setMenuOpen((v) => !v)}>
+              {activeName.replace(/^@/, "").slice(0, 2).toUpperCase()}
+            </button>
+            <strong>Linnet</strong>
+          </div>
+          {menuOpen && (
+            <div className="account-menu" role="menu">
             {accounts.map((a) => (
               <div key={a.accountId} className="menu-row">
                 <button
@@ -201,6 +236,19 @@ export function App(): ReactNode {
                 </button>
               ))}
             </div>
+            <div className="appearance-row" role="group" aria-label="Display density">
+              <span className="lbl">Density</span>
+              {DENSITIES.map((d) => (
+                <button
+                  key={d.id}
+                  aria-pressed={appearance.density === d.id}
+                  data-density-option={d.id}
+                  onClick={() => switchAppearance({ ...appearance, density: d.id })}
+                >
+                  {d.label}
+                </button>
+              ))}
+            </div>
             <div className="appearance-row" role="group" aria-label="Accent color">
               <span className="lbl">Accent</span>
               {ACCENTS.map((a) => (
@@ -214,8 +262,9 @@ export function App(): ReactNode {
                 />
               ))}
             </div>
-          </div>
-        )}
+            </div>
+          )}
+        </div>
         <SpaceRail
           spaces={spacesForRail(rooms)}
           active={activeSpaceId}
@@ -223,29 +272,55 @@ export function App(): ReactNode {
             setSpaceId(id);
             setAddOpen(false);
           }}
-          onCreate={async (name, isPublic) => {
-            if (!clientForView) throw new Error("not signed in");
-            const id = await createSpace(clientForView, { name, isPublic });
-            setSpaceId(id);
-          }}
         />
+        <div className="rail-bottom" ref={railAddRef}>
+          {railAddOpen && (
+            <div className="add-menu" role="menu" aria-label="Add space or room" data-testid="rail-add-menu">
+              <button role="menuitem" onClick={() => { setRailAddOpen(false); setRailDialog("space"); }}>
+                New space
+              </button>
+              <button role="menuitem" onClick={() => { setRailAddOpen(false); setRailDialog("room"); }}>
+                New room
+              </button>
+              <button role="menuitem" onClick={() => { setRailAddOpen(false); setRailDialog("join"); }}>
+                Discover or join room
+              </button>
+            </div>
+          )}
+          <button
+            className="rail-add"
+            aria-label="Add space or room"
+            aria-haspopup="menu"
+            aria-expanded={railAddOpen}
+            onClick={() => setRailAddOpen((v) => !v)}
+          >
+            +
+          </button>
+        </div>
       </nav>
 
       <aside className="roomlist" aria-label="Rooms">
         {activeSpaceId === null ? (
           <>
-            <h3>People</h3>
+            <h3 className="section-heading">People</h3>
             {dmRooms.length === 0 && <p className="empty">no DMs</p>}
             {dmRooms.map((r) => (
-              <Row key={r.roomId} r={r} selected={selectedRoom === r.roomId} onSelect={setSelectedRoom} />
+              <Row
+                key={r.roomId}
+                r={r}
+                selected={selectedRoom === r.roomId}
+                onSelect={setSelectedRoom}
+                onOpenMenu={openRowMenu}
+              />
             ))}
-            <h3>Rooms</h3>
+            <h3 className="section-heading">Rooms</h3>
             {invites.map((r) => (
               <Row
                 key={r.roomId}
                 r={r}
                 selected={selectedRoom === r.roomId}
                 onSelect={setSelectedRoom}
+                onOpenMenu={openRowMenu}
                 onJoin={
                   clientForView
                     ? () => {
@@ -253,15 +328,16 @@ export function App(): ReactNode {
                       }
                     : undefined
                 }
-                onDecline={
-                  clientForView
-                    ? () => void leaveAndMaybeForget(clientForView, r.roomId, true).catch(() => undefined)
-                    : undefined
-                }
               />
             ))}
             {homeList.map((r) => (
-              <Row key={r.roomId} r={r} selected={selectedRoom === r.roomId} onSelect={setSelectedRoom} />
+              <Row
+                key={r.roomId}
+                r={r}
+                selected={selectedRoom === r.roomId}
+                onSelect={setSelectedRoom}
+                onOpenMenu={openRowMenu}
+              />
             ))}
             {rooms.length === 0 && <p className="empty">syncing…</p>}
           </>
@@ -274,19 +350,26 @@ export function App(): ReactNode {
               </button>
             </div>
             {addOpen && (
-              <div className="dialog" role="dialog" aria-modal="true" aria-label="Add existing room" ref={addDialogRef}>
-                {addable.length === 0 && <p className="empty">no rooms to add</p>}
-                {addable.map((r) => (
-                  <button
-                    key={r.roomId}
-                    onClick={() => {
-                      if (clientForView && activeSpace) void addRoomToSpace(clientForView, activeSpace.roomId, r.roomId);
-                      setAddOpen(false);
-                    }}
-                  >
-                    {r.name}
-                  </button>
-                ))}
+              <div
+                className="dialog-scrim"
+                onClick={(e) => {
+                  if (e.target === e.currentTarget) setAddOpen(false);
+                }}
+              >
+                <div className="dialog" role="dialog" aria-modal="true" aria-label="Add existing room" ref={addDialogRef}>
+                  {addable.length === 0 && <p className="empty">no rooms to add</p>}
+                  {addable.map((r) => (
+                    <button
+                      key={r.roomId}
+                      onClick={() => {
+                        if (clientForView && activeSpace) void addRoomToSpace(clientForView, activeSpace.roomId, r.roomId);
+                        setAddOpen(false);
+                      }}
+                    >
+                      {r.name}
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
             {entries.map((e) =>
@@ -296,11 +379,7 @@ export function App(): ReactNode {
                   r={e.room}
                   selected={selectedRoom === e.room.roomId}
                   onSelect={setSelectedRoom}
-                  onRemove={
-                    clientForView && activeSpace
-                      ? () => void removeRoomFromSpace(clientForView, activeSpace.roomId, e.room.roomId)
-                      : undefined
-                  }
+                  onOpenMenu={openRowMenu}
                 />
               ) : (
                 <div key={e.space.roomId} className="nested-space">
@@ -311,6 +390,7 @@ export function App(): ReactNode {
                       r={r}
                       selected={selectedRoom === r.roomId}
                       onSelect={setSelectedRoom}
+                      onOpenMenu={openRowMenu}
                     />
                   ))}
                 </div>
@@ -337,7 +417,18 @@ export function App(): ReactNode {
             <p className="placeholder">
               {rooms.length > 0
                 ? "pick a room — timeline is live"
-                : "waiting for first sync…"}
+                : syncStatus?.phase === "error"
+                  ? (
+                      <>
+                        {syncStatus.fatal
+                          ? `sync failed: ${syncStatus.message} — your session was rejected, sign in again (account menu)`
+                          : `sync problem: ${syncStatus.message} — retrying…`}{" "}
+                        {!syncStatus.fatal && (
+                          <button onClick={() => sm.retrySync()}>retry now</button>
+                        )}
+                      </>
+                    )
+                  : "waiting for first sync…"}
             </p>
             <footer className="composer">composer arrives wave 4 · registry: {registry ? "up" : "booting…"}</footer>
           </>
@@ -345,6 +436,71 @@ export function App(): ReactNode {
       </main>
 
       <CallBanner client={clientForView} />
+      {rowMenu &&
+        (() => {
+          const target = rooms.find((r) => r.roomId === rowMenu.roomId);
+          if (!target) return null;
+          const close = (): void => setRowMenu(null);
+          const canRemoveFromSpace =
+            activeSpace !== null && !target.invite && isDirectChild(activeSpace.roomId, target.roomId, rooms);
+          return (
+            <div
+              className="room-ctx-menu"
+              role="menu"
+              aria-label={`Actions for ${target.name}`}
+              data-testid="room-ctx-menu"
+              ref={ctxMenuRef}
+              style={{ left: rowMenu.x, top: rowMenu.y }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {target.invite ? (
+                <>
+                  <button
+                    role="menuitem"
+                    onClick={() => {
+                      void clientForView?.joinRoom(target.roomId).catch(() => undefined);
+                      close();
+                    }}
+                  >
+                    Accept invite
+                  </button>
+                  <button
+                    role="menuitem"
+                    className="danger"
+                    onClick={() => {
+                      if (clientForView) void leaveAndMaybeForget(clientForView, target.roomId, true).catch(() => undefined);
+                      close();
+                    }}
+                  >
+                    Decline invite
+                  </button>
+                </>
+              ) : (
+                <button
+                  role="menuitem"
+                  className="danger"
+                  onClick={() => {
+                    if (clientForView) void leaveAndMaybeForget(clientForView, target.roomId, target.isDM).catch(() => undefined);
+                    close();
+                  }}
+                >
+                  {target.isDM ? "Leave & forget DM" : "Leave room"}
+                </button>
+              )}
+              {canRemoveFromSpace && activeSpace && (
+                <button
+                  role="menuitem"
+                  onClick={() => {
+                    if (clientForView) void removeRoomFromSpace(clientForView, activeSpace.roomId, target.roomId);
+                    close();
+                  }}
+                >
+                  Remove from space
+                </button>
+              )}
+            </div>
+          );
+        })()}
       {paletteOpen && (
         <div className="palette" role="dialog" aria-modal="true" aria-label="Command palette" ref={paletteRef}>
           <input
@@ -363,6 +519,32 @@ export function App(): ReactNode {
           </ul>
         </div>
       )}
+      {railDialog === "space" && clientForView && (
+        <NewSpaceDialog
+          onClose={() => setRailDialog(null)}
+          onSubmit={async (name, isPublic, encrypt) => {
+            const id = await createSpace(clientForView, { name, isPublic, encrypt });
+            setSpaceId(id);
+          }}
+        />
+      )}
+      {railDialog === "room" && clientForView && (
+        <NewRoomDialog
+          onClose={() => setRailDialog(null)}
+          onSubmit={async (name, isPublic, encrypt) => {
+            const id = await createRoom(clientForView, { name, isPublic, encrypt });
+            setSelectedRoom(id);
+          }}
+        />
+      )}
+      {railDialog === "join" && clientForView && (
+        <JoinRoomDialog
+          onClose={() => setRailDialog(null)}
+          onJoin={async (address) => {
+            await clientForView.joinRoom(address);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -371,22 +553,25 @@ function Row({
   r,
   selected,
   onSelect,
-  onRemove,
+  onOpenMenu,
   onJoin,
-  onDecline,
 }: {
   r: RoomSummary;
   selected: boolean;
   onSelect: (id: string) => void;
-  onRemove?: () => void;
+  /** W12 item 8: opens the row context menu (the ONLY leave/decline path now) */
+  onOpenMenu: (roomId: string, x: number, y: number) => void;
   onJoin?: () => void;
-  onDecline?: () => void;
 }): ReactNode {
   return (
     <button
       className={`row${selected ? " selected" : ""}`}
       aria-current={selected ? "true" : undefined}
       onClick={() => onSelect(r.roomId)}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        onOpenMenu(r.roomId, e.clientX, e.clientY);
+      }}
     >
       <span className="name">{r.name}</span>
       {r.invite && <span className="invite">invite</span>}
@@ -404,32 +589,25 @@ function Row({
           Join
         </span>
       )}
-      {onDecline && (
-        <span
-          role="button"
-          className="row-decline"
-          aria-label={`Decline ${r.name}`}
-          onClick={(e) => {
-            e.stopPropagation();
-            onDecline();
-          }}
-        >
-          ✕
-        </span>
-      )}
-      {onRemove && (
-        <span
-          role="button"
-          className="row-x"
-          aria-label={`Remove ${r.name} from space`}
-          onClick={(e) => {
-            e.stopPropagation();
-            onRemove();
-          }}
-        >
-          ✕
-        </span>
-      )}
+      <span
+        role="button"
+        className="row-menu"
+        aria-label={`Menu for ${r.name}`}
+        aria-haspopup="menu"
+        onClick={(e) => {
+          e.stopPropagation();
+          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+          onOpenMenu(r.roomId, rect.left - 150, rect.bottom + 4);
+        }}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+          onOpenMenu(r.roomId, rect.left - 150, rect.bottom + 4);
+        }}
+      >
+        ⋯
+      </span>
     </button>
   );
 }

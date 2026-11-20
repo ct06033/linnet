@@ -1,10 +1,12 @@
 {
   "name": "@linnet/desktop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "main": "dist-electron/main.js",
+  "desktopName": "linnet.desktop",
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "icons:linux": "node scripts/gen-linux-icons.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dev": "electron .",
     "test": "echo \"no desktop tests in wave 1\" && exit 0",

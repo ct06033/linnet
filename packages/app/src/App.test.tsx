@@ -105,4 +105,16 @@ describe("W12a sync-error surfacing", () => {
     expect(await screen.findByText(/session was rejected/i, {}, { timeout: 20000 })).toBeTruthy();
     expect(screen.queryByText("waiting for first sync…")).toBeNull();
   });
+
+  it("zero-room fresh account gets an actionable empty state, not a fake hang (W12 smoke)", async () => {
+    const fetchFn = createFakeHomeserver({
+      accounts: [ALICE],
+      sync: (userId: string) => makeSyncSnapshot({ userId, rooms: [] }),
+    });
+    setSessionManagerForTests(new SessionManager({ kv: new MemoryKv(), secrets: new MemorySecrets(), fetchFn }));
+    render(<App />);
+    await signIn();
+    expect(await screen.findByText(/create or join/, {}, { timeout: 20000 })).toBeTruthy();
+    expect(screen.queryByText("waiting for first sync…")).toBeNull();
+  });
 });

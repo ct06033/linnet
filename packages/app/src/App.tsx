@@ -339,7 +339,9 @@ export function App(): ReactNode {
                 onOpenMenu={openRowMenu}
               />
             ))}
-            {rooms.length === 0 && <p className="empty">syncing…</p>}
+            {rooms.length === 0 && (
+              <p className="empty">{syncStatus?.phase === "prepared" ? "no rooms yet" : "syncing…"}</p>
+            )}
           </>
         ) : (
           <>
@@ -428,7 +430,11 @@ export function App(): ReactNode {
                         )}
                       </>
                     )
-                  : "waiting for first sync…"}
+                  : syncStatus?.phase === "prepared"
+                    ? // W12 smoke finding: a brand-new account has zero rooms — the old
+                      // copy faked a permanent "sync hang". Sync IS done; act.
+                      "no rooms yet — use + at the bottom left to create or join"
+                    : "waiting for first sync…"}
             </p>
             <footer className="composer">composer arrives wave 4 · registry: {registry ? "up" : "booting…"}</footer>
           </>

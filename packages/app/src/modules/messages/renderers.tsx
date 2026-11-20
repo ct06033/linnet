@@ -8,6 +8,7 @@ import { useState, type ReactNode } from "react";
 import type { LinnetModule, TimelineItemContribution } from "@linnet/core";
 import { sanitizeHtml } from "./html.js";
 import { ImageBody, VoiceBody, FileBody } from "../media/renderers.js";
+import { YouTubeEmbed, extractYouTubeIds } from "../media/youtube.js";
 import { stripFallbackQuote } from "./markdown.js";
 import {
   aggregateReactions,
@@ -51,6 +52,8 @@ function renderBody(props: TimelineItemProps, ev: MatrixEvent): ReactNode {
   // fallback-quote lines are dropped when the relation exists (chip shows it)
   let body = String(useContent["body"] ?? "");
   if (props.replyTarget) body = body.replace(/^(>.*(\n|$))+/, "").trimStart();
+  // W14 item 1: inline YouTube playback for links in the message text
+  const ytIds = extractYouTubeIds(`${body} ${formatted ?? ""}`).slice(0, 2);
   return (
     <div className="msg-body" data-testid={`msg-${props.ev.getId()}`}>
       {props.replyTarget && (
@@ -67,6 +70,13 @@ function renderBody(props: TimelineItemProps, ev: MatrixEvent): ReactNode {
         <span className="plain">{body}</span>
       )}
       {props.edited && <span className="edited-badge" title="edited"> (edited)</span>}
+      {ytIds.length > 0 && (
+        <div className="yt-embeds" data-testid={`yt-embeds-${props.ev.getId()}`}>
+          {ytIds.map((id) => (
+            <YouTubeEmbed key={id} videoId={id} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

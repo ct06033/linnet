@@ -4,7 +4,7 @@
  * per-event action chrome. Content bodies render through registry
  * timeline-item contributions (PRD §6.9).
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Direction,
   EventType,
@@ -34,6 +34,8 @@ import {
 import { Composer, type ComposerMode } from "./Composer.js";
 import { ThreadPanel } from "./ThreadPanel.js";
 import { Viewer } from "../media/renderers.js";
+import { Avatar } from "../ui/avatar.js";
+import { PaneGutter, usePanes } from "../settings/panes.js";
 import { SecurityBanner, SecuritySheet } from "../security/Security.js";
 import { prodAdapter } from "../security/prod.js";
 import { RoomSettings } from "../settings/RoomSettings.js";
@@ -61,6 +63,8 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
   const [secStatus, setSecStatus] = useState<SecurityStatus | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [callErr, setCallErr] = useState<string | null>(null);
+  // W14 item 14: the right panel (thread / room settings) is resizable
+  const { startDrag } = usePanes();
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const pinnedBottom = useRef(true);
 
@@ -134,6 +138,25 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room, tick]);
   const groups = useMemo(() => groupEvents([...events, ...pending]), [events, pending]);
+  // W14 item 10: date-change label per group (first event's local calendar day)
+  const dayBreaks = useMemo(() => {
+    const out: (string | null)[] = [];
+    let prev: string | null = null;
+    for (const g of groups) {
+      const ts = g.events[0]?.getTs() ?? 0;
+      const key = ts ? new Date(ts).toDateString() : null;
+      out.push(key && key !== prev ? dayLabel(ts) : null);
+      if (key) prev = key;
+    }
+    return out;
+  }, [groups]);
+  // W14 item 11: sender avatar mxc from this room's member state
+  const memberAvatar = (uid: string | undefined): string | undefined =>
+    uid && room
+      ? (room.currentState.getStateEvents(EventType.RoomMember, uid)?.getContent()?.avatar_url as
+          | string
+          | undefined)
+      : undefined;
 
   // undo window ticker
   useEffect(() => {
@@ -312,10 +335,18 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
   }, [client, e2ee]);
 
   return (
-    <main className={`roomview${openThread ? " panel-open" : ""}`} data-testid="roomview">
+    <main
+      className={`roomview${openThread || settingsOpen ? " panel-open" : ""}`}
+      data-testid="roomview"
+    >
       <header className="room-header">
         <div className="title">
           <span className="room-name">{room?.name ?? roomId}</span>
+          {topic && (
+            <span className="room-topic-ghost" title={topic} data-testid="room-topic-ghost">
+              {topic}
+            </span>
+          )}
           {/* W14: encrypted rooms open the security center; the loud red
               "Not encrypted" badge points at room settings (where encryption
               can be enabled) */}
@@ -338,6 +369,18 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
           >
             📞
           </button>
+          {/* W14 item 15: 1:1 video */}
+          <button
+            className="call-btn"
+            aria-label="Start video call"
+            onClick={() =>
+              void getMonitor(client)
+                .place(roomId, true)
+                .catch((err: unknown) => setCallErr(String((err as Error)?.message ?? err)))
+            }
+          >
+            🎥
+          </button>
           {callErr && (
             <span role="alert" className="call-err">
               {callErr}
@@ -345,7 +388,6 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
           )}
         </div>
         <div className="sub">
-          {topic && <span className="topic">{topic}</span>}
           <span className="members">{room?.getJoinedMemberCount?.() ?? 0} members</span>
         </div>
       </header>
@@ -364,7 +406,13 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
           ) : null;
         })()}
         {groups.map((g, gi) => (
-          <div className="group" key={`${g.sender}-${gi}`}>
+          <Fragment key={`frag-${g.sender}-${gi}`}>
+            {dayBreaks[gi] && (
+              <div className="day-break" role="separator" data-testid={`day-${gi}`}>
+                <span>{dayBreaks[gi]}</span>
+              </div>
+            )}
+          <div className="group">
             {g.events.map((ev, ei) => {
               const kind = kindOf(ev);
               const firstInGroup = ei === 0 && kind !== "system" && kind !== "redacted";
@@ -413,9 +461,13 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
                 >
                   {firstInGroup && (
                     <div className="who">
-                      <span className="avatar">{shortName(ev.getSender() ?? "?").slice(0, 2).toUpperCase()}</span>
+                      <Avatar
+                        client={client}
+                        mxc={memberAvatar(ev.getSender())}
+                        name={displayNameOf(client, ev.getSender() ?? "?")}
+                        size={26}
+                      />
                       <strong>{displayNameOf(client, ev.getSender() ?? "?")}</strong>
-                      <time>{formatTs(ev.getTs())}</time>
                     </div>
                   )}
                   <div className="content">
@@ -460,6 +512,12 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
                         </button>
                       );
                     })()}
+                    {/* W14 item 9: timestamp bottom-right of EVERY message */}
+                    {kind !== "system" && kind !== "redacted" && (
+                      <time className="msg-time" dateTime={new Date(ev.getTs()).toISOString()}>
+                        {formatTs(ev.getTs())}
+                      </time>
+                    )}
                   </div>
                   {kind !== "system" && kind !== "redacted" && kind !== "utd" && (
                     <div className="actions" role="toolbar" aria-label="Message actions">
@@ -506,6 +564,7 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
               );
             })}
           </div>
+          </Fragment>
         ))}
         {events.length === 0 && pending.length === 0 && (
           <p className="placeholder">This room has no messages yet.</p>
@@ -547,6 +606,7 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
       {secOpen && (
         <SecuritySheet client={client} adapter={prodAdapter} onClose={() => setSecOpen(false)} />
       )}
+      {(openThread || settingsOpen) && <PaneGutter pane="panel" startDrag={startDrag} label="Resize panel" />}
       {settingsOpen && (
         <RoomSettings client={client} roomId={roomId} onClose={() => setSettingsOpen(false)} />
       )}
@@ -592,6 +652,18 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
 
 function shortName(userId: string): string {
   return userId.split(":")[0]?.replace(/^@/, "") ?? userId;
+}
+
+function dayLabel(ts: number): string {
+  const d = new Date(ts);
+  const now = new Date();
+  const startOfDay = (x: Date): number => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.round((startOfDay(now) - startOfDay(d)) / 86_400_000);
+  if (days === 0) return "Today";
+  if (days === 1) return "Yesterday";
+  const opts: Intl.DateTimeFormatOptions = { weekday: "short", month: "short", day: "numeric" };
+  if (d.getFullYear() !== now.getFullYear()) opts.year = "numeric";
+  return d.toLocaleDateString(undefined, opts);
 }
 
 function formatTs(ts: number): string {

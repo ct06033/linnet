@@ -33,13 +33,17 @@ export function spaceInitials(name: string): string {
 export function SpaceRail({ spaces, active, onSelect }: SpaceRailProps): ReactNode {
   return (
     <>
+      {/* W14 item 3: Home must READ as a button — icon, border, own block */}
       <button
-        className={`space${active === null ? " active" : ""}`}
+        className={`space home${active === null ? " active" : ""}`}
         aria-label="Home"
         aria-current={active === null ? "page" : undefined}
         onClick={() => onSelect(null)}
       >
-        Home
+        <span className="home-ico" aria-hidden="true">
+          ⌂
+        </span>
+        <span className="space-name">Home</span>
       </button>
       {spaces.map((s) => (
         <button

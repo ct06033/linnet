@@ -46,6 +46,10 @@ export interface FakeRoom {
   space?: boolean;
   /** W5b: m.space.child state events keyed by child room id */
   children?: Record<string, { order?: string; via?: string[] }>;
+  /** W14 item 11: mxc URI seeded into m.room.avatar state */
+  avatar?: string;
+  /** W14 item 6: initial room tags for the snapshot user (tagName -> meta) */
+  tags?: Record<string, unknown>;
   /** W5b: replace the default m.room.power_levels content (PL-gating tests) */
   powerLevels?: Record<string, unknown>;
 }
@@ -189,6 +193,9 @@ export function makeSyncSnapshot(opts: {
     for (const [uid, membership] of Object.entries(r.members ?? {})) {
       out.push(ev(roomId, "m.room.member", { membership }, { state_key: uid, sender: uid }));
     }
+    if (r.avatar) {
+      out.push(ev(roomId, "m.room.avatar", { url: r.avatar }, { state_key: "" }));
+    }
     // W5b: m.space.child links (state_key = child room id; via required to be active)
     for (const [childId, c] of Object.entries(r.children ?? {})) {
       out.push(
@@ -206,6 +213,13 @@ export function makeSyncSnapshot(opts: {
   for (const r of opts.rooms ?? []) {
     join[r.roomId] = {
       state: { events: stateEvents(r.roomId, r) },
+      ...(r.tags
+        ? {
+            tags: {
+              events: [{ type: "m.tag", sender: opts.userId, room_id: r.roomId, content: { tags: r.tags } }],
+            },
+          }
+        : {}),
       timeline: {
         events: (r.events ?? []).map((e, i) => ({
           depth: i + 1,
@@ -263,6 +277,8 @@ interface QueueItem {
   accountData?: { type: string; content: Record<string, unknown> };
   /** W7: to-device message relayed from PUT /sendToDevice */
   toDevice?: { type: string; sender: string; content: Record<string, unknown> };
+  /** W14: rooms.join[roomId].tags block for the affected user's next sync */
+  tags?: { events: Record<string, unknown>[] };
 }
 
 export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithControls {
@@ -273,6 +289,24 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
   const calls: FakeCallRecord[] = [];
   const queues = new Map<string, QueueItem[]>();
   const waiters = new Map<string, Array<() => void>>();
+  // W14 item 6: per-user room tags (userId -> roomId -> {tagName: meta}).
+  const tagsStore = new Map<string, Map<string, Record<string, unknown>>>();
+  // W14 item 11: userId -> profile content (display_name / avatar_url)
+  const profiles = new Map<string, Record<string, unknown>>();
+  const userTags = (uid: string): Map<string, Record<string, unknown>> => {
+    let m = tagsStore.get(uid);
+    if (!m) {
+      m = new Map();
+      tagsStore.set(uid, m);
+    }
+    return m;
+  };
+  const mkTagEvent = (uid: string, roomId: string): Record<string, unknown> => ({
+    type: "m.tag",
+    sender: uid,
+    room_id: roomId,
+    content: { tags: userTags(uid).get(roomId) ?? {} },
+  });
   const batches = new Map<string, number>();
   const stateStores = new Map<string, Map<string, Record<string, unknown>>>();
   // W6: global account data per user (notification settings et al.)
@@ -426,6 +460,17 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
         const snapshot = opts.sync
           ? opts.sync(userId)
           : makeSyncSnapshot({ userId });
+        // W14: replay this user's stored tags so favourites survive a restart
+        // (spec: rooms.join[roomId].tags.events — the block js-sdk 45 ignores
+        // and SessionManager.applyTagEvents reads instead).
+        const joined = (snapshot as { rooms?: { join?: Record<string, unknown> } }).rooms?.join;
+        if (joined) {
+          for (const [rid, tags] of userTags(userId)) {
+            if (!joined[rid] || Object.keys(tags).length === 0) continue;
+            const body = joined[rid] as Record<string, unknown>;
+            body["tags"] = { events: [mkTagEvent(userId, rid)] };
+          }
+        }
         return jsonRes(snapshot);
       }
       // long-poll: resolve when the queue has anything
@@ -434,7 +479,12 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
         queues.set(userId, []);
         const byRoom = new Map<
           string,
-          { timeline: FakeEventLike[]; ephemeral: FakeEventLike[]; state: Record<string, unknown>[] }
+          {
+            timeline: FakeEventLike[];
+            ephemeral: FakeEventLike[];
+            state: Record<string, unknown>[];
+            tags?: { events: Record<string, unknown>[] };
+          }
         >();
         for (const item of q) {
           if (item.accountData || item.toDevice) continue;
@@ -442,6 +492,8 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
           if (item.event) bucket.timeline.push(item.event);
           if (item.ephemeral) bucket.ephemeral.push(item.ephemeral);
           if (item.initialState) bucket.state.push(...item.initialState);
+          // W14: a tags-only item must still create its room bucket
+          if (item.tags) bucket.tags = item.tags;
           byRoom.set(item.roomId, bucket);
         }
         const n = (batches.get(userId) ?? 2) + 1;
@@ -452,6 +504,7 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
             timeline: { events: bucket.timeline, limited: false, prev_batch: "b0" },
             ephemeral: { events: bucket.ephemeral },
             state: { events: bucket.state },
+            ...(bucket.tags ? { tags: bucket.tags } : {}),
           };
         }
         const adEvents = q
@@ -666,6 +719,47 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
     // W7: GET /voip/turnServer — static fake creds (WebRTC tests never dial out)
     if (path.endsWith("/voip/turnServer") && method === "GET") {
       return jsonRes({ username: "fake", password: "fake", uris: ["stun:stun.fake.test:3478"], ttl: 86400 });
+    }
+
+    // W14 item 11: GET/PUT /profile/{uid} — minimal profile store
+    const profM = path.match(/\/profile\/([^/]+)(?:\/(avatar_url|display_name))?$/);
+    if (profM && account) {
+      const uid = decodeURIComponent(profM[1]!);
+      if (method === "PUT") {
+        const content = (await bodyJson(init)) as Record<string, unknown>;
+        record("PUT", path, content);
+        const field = profM[2];
+        if (field) profiles.set(uid, { ...(profiles.get(uid) ?? {}), [field]: (content as Record<string, unknown>)[field] });
+        else profiles.set(uid, { ...(profiles.get(uid) ?? {}), ...content });
+        return jsonRes({});
+      }
+      if (method === "GET") return jsonRes(profiles.get(uid) ?? {});
+    }
+
+    // W14 item 6: GET/PUT/DELETE /user/{uid}/rooms/{roomId}/tags[/{tag}]
+    const tagM = path.match(/\/user\/[^/]+\/rooms\/([^/]+)\/tags(?:\/([^/]+))?$/);
+    if (tagM && account) {
+      const rid = decodeURIComponent(tagM[1]!);
+      const tagName = tagM[2] ? decodeURIComponent(tagM[2]!) : undefined;
+      const mine = userTags(account.userId);
+      if (method === "PUT") {
+        const content = (await bodyJson(init)) as Record<string, unknown>;
+        record("PUT", path, content);
+        const set = { ...(mine.get(rid) ?? {}) };
+        if (tagName) set[tagName] = content;
+        mine.set(rid, set);
+        enqueue(account.userId, { roomId: rid, tags: { events: [mkTagEvent(account.userId, rid)] } });
+        return jsonRes({});
+      }
+      if (method === "DELETE" && tagName) {
+        record("DELETE", path, null);
+        const set = { ...(mine.get(rid) ?? {}) };
+        delete set[tagName];
+        mine.set(rid, set);
+        enqueue(account.userId, { roomId: rid, tags: { events: [mkTagEvent(account.userId, rid)] } });
+        return jsonRes({});
+      }
+      if (method === "GET") return jsonRes({ tags: mine.get(rid) ?? {} });
     }
 
     // W6: GET/PUT /user/{userId}/account_data/{type} — global settings storage

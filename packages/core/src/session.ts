@@ -1,10 +1,12 @@
 import {
   ClientEvent,
   EventType,
+  MatrixEvent,
   NotificationCountType,
   PendingEventOrdering,
   SyncState,
   type MatrixClient,
+  type Room,
 } from "matrix-js-sdk";
 import { createClientSession } from "./sdk.js";
 import {
@@ -29,6 +31,16 @@ export interface RoomSummary {
   e2ee: boolean;
   /** active m.space.child entries (state_key = child room id) */
   spaceChildren: SpaceChildRef[];
+  /** W14 item 4: joined member count (0 before state sync / for invites) */
+  memberCount: number;
+  /** W14 item 13: m.room.topic content, undefined when unset/empty */
+  topic?: string;
+  /** W14 items 5/6: the other participant for DM rooms */
+  dmUserId?: string;
+  /** W14 item 11: m.room.avatar mxc URI (rooms; for DMs the partner's) */
+  avatarUrl?: string;
+  /** W14 item 6: standard Matrix "m.favourite" room tag (Element-interop) */
+  favourite: boolean;
 }
 
 export interface SpaceChildRef {
@@ -270,7 +282,7 @@ export class SessionManager {
     if (!s) return;
     if (!s.attached) {
       s.attached = true;
-      s.client.on(ClientEvent.Sync, (state: SyncState) => {
+      s.client.on(ClientEvent.Sync, (state: SyncState, _old: SyncState | null, data?: unknown) => {
         if (state === SyncState.Prepared || state === SyncState.Syncing) {
           // W12a: first sync (or a recovery sync) succeeded — retry budget resets.
           this.clearRetry(s);
@@ -279,6 +291,10 @@ export class SessionManager {
             s.lastStatus = { phase: "prepared" };
             for (const l of this.statusListeners) l(accountId, s.lastStatus);
           }
+          // W14 item 6: feed js-sdk's Room.tags from the RAW sync response —
+          // matrix-js-sdk 45.1.0 ignores the spec `tags: {events}` block of
+          // join objects entirely (verified: no reference in src/sync.ts).
+          applyTagEvents(s.client, data);
           const rooms = summarize(s.client);
           for (const l of this.listeners) l(accountId, rooms);
         } else if (state === SyncState.Error || state === SyncState.Reconnecting) {
@@ -427,6 +443,42 @@ export class SessionManager {
     return () => this.listeners.delete(listener);
   }
 
+  /** Re-run summarize and push the list without waiting for the next /sync
+   *  echo (used after local writes like favourite toggles). */
+  refreshRooms(accountId = this.activeId ?? undefined): void {
+    if (!accountId) return;
+    const s = this.live.get(accountId);
+    if (!s) return;
+    const rooms = summarize(s.client);
+    for (const l of this.listeners) l(accountId, rooms);
+  }
+
+  /**
+   * W14 item 6: favourite with the STANDARD Matrix room tag ("m.favourite",
+   * order 0.5) — Element/Cinny/matrix-commander all see the same flag.
+   * Optimistically writes Room.tags locally (js-sdk's setRoomTag is a bare
+   * PUT with no local echo) and refreshes the list immediately.
+   */
+  async setFavourite(
+    roomId: string,
+    favourite: boolean,
+    accountId = this.activeId ?? undefined,
+  ): Promise<void> {
+    if (!accountId) throw new Error("no active session");
+    const s = this.live.get(accountId);
+    if (!s) throw new Error(`no live session: ${accountId}`);
+    if (favourite) await s.client.setRoomTag(roomId, "m.favourite", { order: 0.5 });
+    else await s.client.deleteRoomTag(roomId, "m.favourite");
+    const room = s.client.getRoom(roomId);
+    if (room) {
+      const tags = { ...(room.tags ?? {}) };
+      if (favourite) tags["m.favourite"] = { order: 0.5 };
+      else delete tags["m.favourite"];
+      room.addTags(new MatrixEvent({ type: "m.tag", room_id: roomId, content: { tags } }));
+    }
+    this.refreshRooms(accountId);
+  }
+
   /** The active account's js-sdk client (events, crypto, room APIs). Throws if none. */
   activeClient(): MatrixClient {
     const s = this.activeId ? this.live.get(this.activeId) : undefined;
@@ -464,6 +516,27 @@ export class SessionManager {
   }
 }
 
+/**
+ * W14 item 6 — sync-tag bridge. The /sync join object spec shape is
+ * `tags: { events: [{type:"m.tag", content:{tags:{...}}}] }`; js-sdk 45.1.0
+ * never reads it (Room.tags is only fed via room.addAccountData). We apply it
+ * ourselves off the raw response so favourites survive restarts and sync
+ * across clients. Idempotent: addTags replaces wholesale.
+ */
+export function applyTagEvents(client: MatrixClient, data: unknown): void {
+  const joins = (data as { rooms?: { join?: Record<string, unknown> } })?.rooms?.join;
+  if (!joins) return;
+  for (const [roomId, obj] of Object.entries(joins)) {
+    const tagEvents = (obj as { tags?: { events?: Array<Record<string, unknown>> } })?.tags?.events;
+    if (!Array.isArray(tagEvents) || tagEvents.length === 0) continue;
+    const room: Room | null = client.getRoom(roomId);
+    if (!room) continue;
+    for (const ev of tagEvents) {
+      if (ev["type"] === "m.tag") room.addTags(new MatrixEvent({ ...ev, room_id: roomId }));
+    }
+  }
+}
+
 function summarize(client: MatrixClient): RoomSummary[] {
   const userId = client.getUserId();
   const directEvent = (
@@ -489,16 +562,49 @@ function summarize(client: MatrixClient): RoomSummary[] {
         };
       })
       .filter((c): c is SpaceChildRef => c !== null && c.roomId !== "");
+    const isDM = direct.includes(room.roomId) || Boolean(room.getDMInviter());
+    // W14 items 5/11: DM partner = the other non-left member; the inviter is
+    // the fallback for a not-yet-joined DM (their member list may be stripped).
+    let dmUserId: string | undefined;
+    if (isDM) {
+      const other = room
+        .getJoinedMembers()
+        .find((m) => m.userId !== userId && m.membership !== "leave");
+      const inviter = room.getDMInviter();
+      dmUserId = other?.userId ?? (inviter && inviter !== userId ? inviter : undefined);
+    }
+    const roomAvatar = room.currentState.getStateEvents("m.room.avatar", "")?.getContent()?.url as
+      | string
+      | undefined;
+    // DM rows show the PARTNER's avatar: read raw mxc from their member event
+    // (RoomMember.getAvatarUrl needs 6 args in v45 and returns http, but the
+    // summary keeps mxc URIs so the app picks sizing/auth uniformly).
+    const partnerAvatar = dmUserId
+      ? (room.currentState.getStateEvents(EventType.RoomMember, dmUserId)?.getContent()
+          ?.avatar_url as string | undefined)
+      : undefined;
     out.push({
       roomId: room.roomId,
       name: room.name || room.roomId,
-      isDM: direct.includes(room.roomId) || Boolean(room.getDMInviter()),
+      isDM,
       unread: room.getUnreadNotificationCount(NotificationCountType.Total) ?? 0,
       invite: membership === "invite",
       isSpace: room.isSpaceRoom(),
       membership,
       e2ee: room.hasEncryptionStateEvent(),
       spaceChildren,
+      memberCount: room.getJoinedMemberCount?.() ?? 0,
+      topic:
+        (room.currentState.getStateEvents(EventType.RoomTopic, "")?.getContent()?.topic as
+          | string
+          | undefined) || undefined,
+      dmUserId,
+      avatarUrl: roomAvatar ?? partnerAvatar ?? undefined,
+      // W14 item 6: Room.tags is js-sdk's public per-room tag dict. js-sdk 45
+      // does NOT parse the spec `tags` field of sync join objects itself (only
+      // room.addAccountData with an m.tag event feeds it), so SessionManager
+      // folds the raw sync data in via applyTagEvents() before summarizing.
+      favourite: Boolean(room.tags?.["m.favourite"]),
     });
   }
   return out;

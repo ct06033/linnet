@@ -80,7 +80,10 @@ describe("W5b room settings", () => {
     await openSettings("dev");
     fireEvent.change(screen.getByLabelText("Room topic"), { target: { value: "new topic" } });
     fireEvent.click(screen.getByRole("button", { name: "Save topic" }));
-    await waitFor(() => expect(document.querySelector(".sub .topic")?.textContent).toBe("new topic"));
+    // W14 item 13: saved topic now renders ghosted in the title bar
+    await waitFor(() =>
+      expect(document.querySelector(".room-header .room-topic-ghost")?.textContent).toBe("new topic"),
+    );
   });
 
   it("R4/R7: PL-gated inputs and buttons are disabled for a PL-0 user", async () => {

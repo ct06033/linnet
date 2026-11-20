@@ -13,6 +13,7 @@ import {
 } from "matrix-js-sdk";
 import type { LinnetModule } from "@linnet/core";
 import { uploadBytes } from "../media/core.js";
+import { LockMark } from "../security/Security.js";
 import { modeFor, readPrefs, setRoomMode, writePrefs, type NotifyMode } from "../notify/model.js";
 
 export interface RoomSettingsProps {
@@ -47,6 +48,10 @@ export function RoomSettings({ client, roomId, onClose }: RoomSettingsProps): Re
   const [left, setLeft] = useState(false);
   const [mode, setMode] = useState<NotifyMode>(() => modeFor(readPrefs(client), roomId));
   const [kwDraft, setKwDraft] = useState(() => readPrefs(client).keywords.join(", "));
+  // W14-VISIBILITY: encryption state + enable flow (one-way: m.room.encryption
+  // cannot be undone once set — hence the inline confirm step)
+  const [enc, setEnc] = useState<boolean>(() => room?.hasEncryptionStateEvent() ?? false);
+  const [encConfirm, setEncConfirm] = useState(false);
 
   const can = (type: EventType | string): boolean => room?.currentState.maySendStateEvent(type, me) ?? false;
   const canName = can(EventType.RoomName);
@@ -213,6 +218,40 @@ export function RoomSettings({ client, roomId, onClose }: RoomSettingsProps): Re
             }}
           />
         </label>
+      </section>
+
+      <section className="enc-zone" aria-label="Encryption" data-testid="enc-section">
+        <h4>Encryption</h4>
+        <p className={`enc-state ${enc ? "on" : "off"}`}>
+          <LockMark e2ee={enc} /> {enc ? "Encrypted (Megolm)" : "Not encrypted"}
+        </p>
+        {!enc && can(EventType.RoomEncryption) && !encConfirm && (
+          <button className="primary" data-testid="enc-enable" disabled={busy} onClick={() => setEncConfirm(true)}>
+            Enable encryption
+          </button>
+        )}
+        {!enc && can(EventType.RoomEncryption) && encConfirm && (
+          <div className="enc-confirm" data-testid="enc-confirm">
+            <p>Encryption cannot be undone. Enable?</p>
+            <button
+              className="danger"
+              data-testid="enc-enable-confirm"
+              disabled={busy}
+              onClick={() =>
+                void act(async () => {
+                  await client.sendStateEvent(roomId, EventType.RoomEncryption, { algorithm: "m.megolm.v1.aes-sha2" }, "");
+                  setEnc(true);
+                  setEncConfirm(false);
+                }, "enable encryption")
+              }
+            >
+              Enable
+            </button>
+            <button data-testid="enc-enable-cancel" onClick={() => setEncConfirm(false)}>
+              Cancel
+            </button>
+          </div>
+        )}
       </section>
 
       <section className="danger-zone">

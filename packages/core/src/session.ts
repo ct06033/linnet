@@ -25,6 +25,8 @@ export interface RoomSummary {
   isSpace: boolean;
   /** join | invite | leave | ban (summarize drops leave/ban) */
   membership: string;
+  /** W14: room has an m.room.encryption state event (padlock in the list) */
+  e2ee: boolean;
   /** active m.space.child entries (state_key = child room id) */
   spaceChildren: SpaceChildRef[];
 }
@@ -495,6 +497,7 @@ function summarize(client: MatrixClient): RoomSummary[] {
       invite: membership === "invite",
       isSpace: room.isSpaceRoom(),
       membership,
+      e2ee: room.hasEncryptionStateEvent(),
       spaceChildren,
     });
   }

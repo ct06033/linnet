@@ -83,6 +83,30 @@ describe("SessionManager", () => {
     sm.stopAll();
   });
 
+  it("W14: summarize carries per-room e2ee from m.room.encryption state", async () => {
+    const fetchFn = createFakeHomeserver({
+      accounts: [ALICE],
+      sync: (userId) =>
+        makeSyncSnapshot({
+          userId,
+          rooms: [
+            { roomId: "!plain:hs.test", name: "plain-room" },
+            { roomId: "!enc:hs.test", name: "enc-room", encrypted: true },
+          ],
+        }),
+    });
+    const sm = new SessionManager({ kv: new MemoryKv(), secrets: new MemorySecrets(), fetchFn });
+    await sm.login({ homeserverUrl: "https://hs.test", username: ALICE.userId, password: ALICE.password });
+    let rooms: RoomSummary[] = [];
+    sm.onRooms((_id, r) => {
+      rooms = r;
+    });
+    await until(() => rooms.some((r) => r.name === "enc-room"));
+    expect(rooms.find((r) => r.name === "enc-room")?.e2ee).toBe(true);
+    expect(rooms.find((r) => r.name === "plain-room")?.e2ee).toBe(false);
+    sm.stopAll();
+  });
+
   it("logout wipes secret, removes account, falls back active", async () => {
     const secrets = new MemorySecrets();
     const sm = new SessionManager({ kv: new MemoryKv(), secrets, fetchFn: makeFetch() });

@@ -59,19 +59,73 @@ export interface SecurityAdapter {
   onIncomingRequest(client: MatrixClient, cb: (h: VerifyHandle, request: unknown) => void): () => void;
 }
 
+export type LockTone = "on" | "warn" | "off";
+
+/**
+ * W14-VISIBILITY: the padlock SVG shared by the room/DM list rows and the
+ * header badge. Emoji cannot be colored, so these are real SVG marks driven
+ * by currentColor — the CSS classes lock-on (green) / lock-warn (amber) /
+ * lock-off (red) supply the hues. `labeled` is used by the list rows
+ * (role=img + aria-label/title + data-testid lock-on/lock-off per spec);
+ * badge instances stay decorative (aria-hidden) because the button text
+ * already names them.
+ */
+export function LockMark(props: { e2ee: boolean; tone?: LockTone; labeled?: boolean }): ReactNode {
+  const tone = props.tone ?? (props.e2ee ? "on" : "off");
+  const label = props.e2ee ? "Encrypted" : "Not encrypted";
+  const a11y = props.labeled
+    ? {
+        role: "img" as const,
+        "aria-label": label,
+        title: label,
+        "data-testid": props.e2ee ? "lock-on" : "lock-off",
+      }
+    : { "aria-hidden": true };
+  return (
+    <svg className={`lock lock-${tone}`} viewBox="0 0 16 16" fill="none" {...a11y}>
+      <rect x="3" y="7.2" width="10" height="7.3" rx="1.8" fill="currentColor" />
+      {props.e2ee ? (
+        // CLOSED padlock: the shackle re-enters the body
+        <path d="M5.4 7.6V4.9a2.6 2.6 0 0 1 5.2 0v2.7" stroke="currentColor" strokeWidth="1.7" />
+      ) : (
+        // OPEN padlock: the right shackle leg is unlatched (stops above body)
+        <path d="M5.4 7.6V4.9a2.6 2.6 0 0 1 5.2 0v.9" stroke="currentColor" strokeWidth="1.7" />
+      )}
+    </svg>
+  );
+}
+
 export function SecurityBanner(props: { status: SecurityStatus | null; encrypted: boolean; onClick: () => void }): ReactNode {
-  if (!props.encrypted) return null;
+  // W14-VISIBILITY: an unencrypted room is the LOUD case — a red open-padlock
+  // "Not encrypted" badge whose click opens room settings (where encryption
+  // can be enabled). Emoji cannot be colored — real SVG marks it is.
+  if (!props.encrypted) {
+    return (
+      <button
+        className="e2ee-badge off"
+        onClick={props.onClick}
+        data-testid="security-banner"
+        title="This room is NOT encrypted — open room settings"
+      >
+        <LockMark e2ee={false} tone="off" /> Not encrypted
+      </button>
+    );
+  }
   const s = props.status;
   let cls = "off";
+  let tone: LockTone = "off";
   let text = "Encryption";
   if (s?.cryptoAvailable && s.ready === true) {
     cls = "on";
+    tone = "on";
     text = "Secured";
   } else if (s?.cryptoAvailable && s.ready === false) {
     cls = "warn";
+    tone = "warn";
     text = "Set up encryption";
   } else if (s && !s.cryptoAvailable) {
     cls = "warn";
+    tone = "warn";
     text = "Crypto unavailable";
   }
   return (
@@ -81,7 +135,7 @@ export function SecurityBanner(props: { status: SecurityStatus | null; encrypted
       data-testid="security-banner"
       title="Room encryption status — open security center"
     >
-      🔒 {text}
+      <LockMark e2ee tone={tone} /> {text}
     </button>
   );
 }

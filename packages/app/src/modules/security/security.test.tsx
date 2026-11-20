@@ -502,9 +502,27 @@ describe("W5a banner", () => {
     expect(screen.getByTestId("security-banner").textContent).toContain("Set up encryption");
   });
 
-  it("non-encrypted room shows nothing", () => {
-    render(<SecurityBanner encrypted={false} status={null} onClick={() => undefined} />);
-    expect(screen.queryByTestId("security-banner")).toBeNull();
+  it("non-encrypted room shows a LOUD red badge", () => {
+    const { container } = render(<SecurityBanner encrypted={false} status={null} onClick={() => undefined} />);
+    const badge = screen.getByTestId("security-banner");
+    expect(badge.textContent).toContain("Not encrypted");
+    expect(badge.className).toContain("off");
+    // SVG mark, not an emoji (emoji cannot be colored)
+    expect(badge.querySelector("svg.lock-off")).toBeTruthy();
+    expect(container.textContent).not.toContain("🔒");
+  });
+
+  it("encrypted ready shows a green CLOSED padlock, no emoji", () => {
+    render(
+      <SecurityBanner
+        encrypted
+        status={{ cryptoAvailable: true, ready: true, ssssReady: true, crossSigningReady: true, backupEnabled: true, backupCount: 1 }}
+        onClick={() => undefined}
+      />,
+    );
+    const badge = screen.getByTestId("security-banner");
+    expect(badge.querySelector("svg.lock-on")).toBeTruthy();
+    expect(badge.textContent).not.toContain("🔒");
   });
 });
 
@@ -561,7 +579,10 @@ describe("W5a room wiring", () => {
   it("banner appears in encrypted room; click opens the sheet (degraded honestly without crypto)", async () => {
     await openSecureRoom();
     const banner = await screen.findByTestId("security-banner");
-    expect(banner.textContent).toContain("🔒");
+    // W14: SVG padlock mark, not the emoji (which cannot be colored)
+    expect(banner.querySelector("svg.lock")).toBeTruthy();
+    expect(banner.textContent).not.toContain("🔒");
+    expect(banner.textContent).toContain("Crypto unavailable");
     fireEvent.click(banner);
     const sheet = await screen.findByTestId("security-sheet");
     expect(sheet.textContent).toContain("Security & encryption");

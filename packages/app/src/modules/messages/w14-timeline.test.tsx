@@ -23,7 +23,11 @@ const ALICE = { userId: "@alice:hs.test", password: "pw-alice", accessToken: "to
 const BOB = "@bob:hs.test";
 
 const DAY = 86_400_000;
-const YESTERNOON = Date.now() - DAY - 3_600_000;
+// local-noon YESTERDAY (fixed-offset ms flake near midnight)
+const _y = new Date();
+_y.setDate(_y.getDate() - 1);
+_y.setHours(12, 0, 0, 0);
+const YESTERNOON = _y.getTime();
 const THISMORNING = Date.now() - 60_000;
 
 function msg(body: string, sender: string, ts: number, id: string): FakeEventLike {

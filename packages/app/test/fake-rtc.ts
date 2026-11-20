@@ -63,7 +63,7 @@ class FakeStream {
     return this.tracks.filter((t) => t.kind === "audio");
   }
   getVideoTracks(): FakeTrack[] {
-    return [];
+    return this.tracks.filter((t) => t.kind === "video");
   }
   addTrack(t: FakeTrack): void {
     this.tracks.push(t);
@@ -148,11 +148,33 @@ class FakeRTCPeerConnection extends EventTarget {
   private lastStreamId = "fakestream";
   addTrack(track: FakeTrack, stream?: { id?: string }): { track: FakeTrack; replaceTrack(t: FakeTrack): void; getParameters(): { codecs?: unknown } } {
     if (stream?.id) this.lastStreamId = stream.id;
+    // W14: the SDK links addTrack's sender back through getTransceivers()
+    // (`find(t => t.sender === newSender)`) to populate its transceiver map —
+    // the source of MatrixCall.type/video senders and screenshare state. The
+    // fake must register a findable transceiver, or hasUserMediaVideoSender
+    // stays false and video calls look audio-only.
+    const sender = { track, replaceTrack(t: FakeTrack): void { sender.track = t; }, getParameters: () => ({}) };
+    this.transceivers.push({
+      sender,
+      receiver: { track },
+      direction: "sendrecv",
+      setCodecPreferences(): void {},
+      _streamId: stream?.id ?? this.lastStreamId,
+    });
     this.fireNegotiationNeeded();
-    return { track, replaceTrack(): void {}, getParameters: () => ({}) };
+    return sender;
   }
   getTransceivers(): unknown[] {
     return this.transceivers;
+  }
+  // W14: js-sdk's screenshare STOP path (pushLocalFeed(null)) calls
+  // peerConn.removeTrack(sender) — without it the toggle-off throws mid-call.
+  removeTrack(sender: unknown): void {
+    const i = this.transceivers.findIndex(
+      (t) => (t as { sender?: unknown }).sender === sender,
+    );
+    if (i >= 0) this.transceivers.splice(i, 1);
+    this.fireNegotiationNeeded();
   }
   getSenders(): unknown[] {
     return this.transceivers.map((t) => (t as { sender: unknown }).sender);
@@ -178,23 +200,69 @@ class FakeRTCPeerConnection extends EventTarget {
     this.remoteDescription = new FakeRTCSessionDescription(desc);
     this.signalingState = desc.type === "offer" ? "have-remote-offer" : "stable";
     // per spec, track events fire BEFORE the promise resolves (js-sdk checks
-    // immediately after await)
-    const msid = /a=msid:(\S+)\s/.exec(this.remoteDescription?.sdp ?? "")?.[1] ?? "fakestream";
-    const trEvent = Object.assign(new Event("track"), {
-      streams: [new FakeStream([new FakeTrack("audio")], msid)],
-      track: new FakeTrack("audio"),
-      receiver: { track: new FakeTrack("audio") },
-    });
-    this.dispatchEvent(trEvent);
-    this.ontrack?.(trEvent);
+    // immediately after await). W14: fire one event per SDP m-section so the
+    // callee learns VIDEO from the invite (the SDK builds remote feeds from
+    // these events; hasRemoteUserMediaVideoTrack has no other source pre-answer).
+    const secs: { kind: "audio" | "video"; streamId: string }[] = [];
+    for (const m of (this.remoteDescription?.sdp ?? "").matchAll(/m=(audio|video)([\s\S]*?)(?=\r?\nm=|$)/g)) {
+      secs.push({
+        kind: m[1] as "audio" | "video",
+        streamId: /a=msid:(\S+)/.exec(m[2] ?? "")?.[1] ?? "fakestream",
+      });
+    }
+    if (secs.length === 0) secs.push({ kind: "audio", streamId: "fakestream" });
+    const secTracks = secs.map((s) => ({ ...s, track: new FakeTrack(s.kind) }));
+    const streamsById = new Map<string, FakeStream>();
+    for (const s of secTracks) {
+      streamsById.set(
+        s.streamId,
+        new FakeStream(secTracks.filter((x) => x.streamId === s.streamId).map((x) => x.track), s.streamId),
+      );
+    }
+    for (const s of secTracks) {
+      const trEvent = Object.assign(new Event("track"), {
+        streams: [streamsById.get(s.streamId)],
+        track: s.track,
+        receiver: { track: s.track },
+      });
+      this.dispatchEvent(trEvent);
+      this.ontrack?.(trEvent);
+    }
   }
   async createOffer(): Promise<FakeRTCSessionDescription> {
     // msid MUST be our local stream id: the remote side looks up
     // SDPStreamMetadata by it (pushRemoteFeed)
-    return new FakeRTCSessionDescription({
-      type: "offer",
-      sdp: FAKE_SDP_OFFER.replace("a=msid:fakestream faketack", `a=msid:${this.lastStreamId} faketack`),
+    const secs: { kind: "audio" | "video"; streamId: string }[] = [];
+    for (const raw of this.transceivers) {
+      const t = raw as { sender?: { track?: { kind?: string } }; _streamId?: string };
+      const kind = t.sender?.track?.kind;
+      if (kind !== "audio" && kind !== "video") continue;
+      const streamId = t._streamId ?? this.lastStreamId;
+      if (secs.some((s) => s.kind === kind && s.streamId === streamId)) continue;
+      secs.push({ kind, streamId });
+    }
+    if (secs.length === 0) secs.push({ kind: "audio", streamId: this.lastStreamId });
+    if (secs.length === 1 && secs[0].kind === "audio") {
+      // byte-compatible single-section form proven by the W7 voice flow
+      return new FakeRTCSessionDescription({
+        type: "offer",
+        sdp: FAKE_SDP_OFFER.replace("a=msid:fakestream faketack", `a=msid:${this.lastStreamId} faketack`),
+      });
+    }
+    const fingerprint =
+      "a=fingerprint:sha-256 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11";
+    let sdp = "v=0\r\no=- 100 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n";
+    secs.forEach((s, mid) => {
+      sdp +=
+        `m=${s.kind} 9 UDP/TLS/RTP/SAVPF 111\r\n` +
+        "c=IN IP4 0.0.0.0\r\na=rtcp-mux\r\n" +
+        "a=ice-ufrag:ufragA\r\na=ice-pwd:pwdpwdpwdA\r\n" +
+        `${fingerprint}\r\na=setup:actpass\r\n` +
+        `a=mid:${mid}\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\n` +
+        "a=sendrecv\r\na=rtcp:9 IN IP4 0.0.0.0\r\n" +
+        `a=rtpmap:111 opus/48000/2\r\na=msid:${s.streamId} fake-tack-${mid}\r\n`;
     });
+    return new FakeRTCSessionDescription({ type: "offer", sdp });
   }
   async createAnswer(): Promise<FakeRTCSessionDescription> {
     return new FakeRTCSessionDescription({ type: "answer", sdp: FAKE_SDP_ANSWER });
@@ -265,9 +333,13 @@ export function installFakeWebRTC(viObj: typeof vi): void {
           ...(c?.audio ? [new FakeTrack("audio")] : []),
           ...(c?.video ? [new FakeTrack("video")] : []),
         ]),
+      getDisplayMedia: async () => new FakeStream([new FakeTrack("video")]),
       enumerateDevices: async () => [
         { kind: "audioinput", deviceId: "fake-in", label: "Fake Mic", groupId: "g1" },
         { kind: "audiooutput", deviceId: "fake-out", label: "Fake Speaker", groupId: "g2" },
+        // W14: MediaHandler requests no video at all when no videoinput is
+        // enumerated (same trap class as the audioinput deadlock in W7)
+        { kind: "videoinput", deviceId: "fake-cam", label: "Fake Camera", groupId: "g3" },
       ],
       addEventListener(): void {},
       removeEventListener(): void {},

@@ -362,6 +362,18 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
           >
             📞
           </button>
+          {/* W14 item 15: 1:1 video */}
+          <button
+            className="call-btn"
+            aria-label="Start video call"
+            onClick={() =>
+              void getMonitor(client)
+                .place(roomId, true)
+                .catch((err: unknown) => setCallErr(String((err as Error)?.message ?? err)))
+            }
+          >
+            🎥
+          </button>
           {callErr && (
             <span role="alert" className="call-err">
               {callErr}

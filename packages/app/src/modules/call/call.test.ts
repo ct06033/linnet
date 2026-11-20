@@ -93,6 +93,62 @@ describe("call pure helpers", () => {
   });
 });
 
+describe("W14 item 15 — 1:1 video + screenshare", () => {
+  it(
+    "video invite rings with video on both sides; screenshare toggles live",
+    async () => {
+      await mAlice.place("!dm:hs.test", true);
+      try {
+      expect(mAlice.getSnapshot().video).toBe(true);
+
+      await vi.waitFor(() => expect(mBob.getSnapshot().state).toBe(CallState.Ringing), { timeout: 8000 });
+
+      mBob.answer(true);
+      await vi.waitFor(
+        () =>
+          expect(
+            ctl.calls.some(
+              (c) =>
+                c.method === "PUT" &&
+                decodeURIComponent(c.path).includes("/rooms/!dm:hs.test/send/m.call.answer/"),
+            ),
+          ).toBe(true),
+        { timeout: 8000 },
+      );
+
+      // bob answered WITH video -> his local media acquired a video track
+      await vi.waitFor(() => expect(mBob.getSnapshot().video).toBe(true), { timeout: 8000 });
+
+      // screenshare over the LIVE call (v45 metadata path — both ends are js-sdk 45)
+      const now = await mAlice.toggleScreenshare();
+      expect(now).toBe(true);
+      expect(mAlice.getSnapshot().sharing).toBe(true);
+      // second toggle stops it
+      const after = await mAlice.toggleScreenshare();
+      expect(after).toBe(false);
+      expect(mAlice.getSnapshot().sharing).toBe(false);
+
+      } finally {
+        // never strand call state between tests (shared clients + monitors!)
+        mAlice.hangup();
+        mBob.hangup();
+        await vi
+          .waitFor(() => {
+            expect(mAlice.getSnapshot().call).toBeNull();
+            expect(mBob.getSnapshot().call).toBeNull();
+          }, { timeout: 8000 })
+          .catch(() => undefined);
+      }
+    },
+    45000,
+  );
+
+  it("toggleScreenshare outside a call refuses with a readable error", async () => {
+    expect(mBob.getSnapshot().call).toBeNull();
+    await expect(mBob.toggleScreenshare()).rejects.toThrow("not in a call");
+  });
+});
+
 describe("1:1 call flow (fake RTC + to_device relay)", () => {
   it(
     "invite -> bob rings -> answer -> hangup -> both idle",

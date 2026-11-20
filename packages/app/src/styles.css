@@ -512,3 +512,36 @@ button.section-toggle {
 .call-stage .stage-leave { padding: 2px 10px; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: inherit; cursor: pointer; }
 .call-stage .ec-frame { width: 100%; height: 420px; border: 0; border-radius: 8px; background: #000; }
 .roomview { position: relative; }
+
+
+/* P1 pinning — header chip, row accent, right-hand pinned list, jump flash */
+.pinned-chip {
+  border: 1px solid var(--border); background: var(--bg-alt); color: var(--fg);
+  border-radius: 999px; padding: 2px 10px; font-size: 12px; cursor: pointer;
+}
+.pinned-chip:hover { border-color: var(--accent); }
+.pin-btn.on { opacity: 1; text-decoration: underline; }
+.row.pinned > .content { border-left: 2px solid var(--accent); padding-left: 8px; }
+.row.flash { animation: rowflash 1.2s ease-out; }
+@keyframes rowflash { 0% { background: color-mix(in srgb, var(--accent) 22%, transparent); } 100% { background: transparent; } }
+.pinned-panel {
+  width: var(--panel, 340px); flex: none; min-height: 0; overflow-y: auto;
+  border-left: 1px solid var(--border); background: var(--bg-alt);
+  padding: 12px 14px 16px; display: flex; flex-direction: column; gap: 10px;
+}
+.pinned-panel .settings-head {
+  display: flex; justify-content: space-between; align-items: center;
+  font-weight: 700; font-size: 14px; border-bottom: 1px solid var(--line); padding-bottom: 8px;
+}
+.pinned-panel .settings-head button { border: none; background: transparent; color: var(--fg-dim); font-size: 14px; cursor: pointer; }
+.pinned-row { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; }
+.pinned-meta { display: flex; justify-content: space-between; font-size: 12px; color: var(--fg-dim); }
+.pinned-meta time { font-weight: 400; }
+.pinned-body { margin: 0; font-size: 13px; color: var(--fg); overflow-wrap: anywhere; }
+.pinned-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.pinned-actions button {
+  border: 1px solid var(--border); background: transparent; color: var(--fg-dim);
+  border-radius: 8px; padding: 3px 9px; font-size: 12px; cursor: pointer;
+}
+.pinned-actions button:hover:not(:disabled) { color: var(--fg); border-color: var(--accent); }
+.pinned-actions button:disabled { opacity: 0.45; cursor: default; }

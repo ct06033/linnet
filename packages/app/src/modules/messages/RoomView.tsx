@@ -33,6 +33,7 @@ import {
 } from "./model.js";
 import { Composer, type ComposerMode } from "./Composer.js";
 import { ThreadPanel } from "./ThreadPanel.js";
+import { PinnedPanel, pinnedIds, togglePinned } from "./pinned.js";
 import { Viewer } from "../media/renderers.js";
 import { Avatar } from "../ui/avatar.js";
 import { PaneGutter, usePanes } from "../settings/panes.js";
@@ -63,6 +64,7 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
   const [secOpen, setSecOpen] = useState(false);
   const [secStatus, setSecStatus] = useState<SecurityStatus | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [pinnedOpen, setPinnedOpen] = useState(false); // P1 pinning
   const [callErr, setCallErr] = useState<string | null>(null);
   const [groupOpen, setGroupOpen] = useState(false); // W15: group call stage
   // W14 item 14: the right panel (thread / room settings) is resizable
@@ -181,16 +183,18 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
   }, [openThread]);
 
   // W12 item 2: Esc also closes the settings panel and the image viewer
+  // (P1: and the pinned list)
   useEffect(() => {
-    if (!settingsOpen && viewer === null) return;
+    if (!settingsOpen && !pinnedOpen && viewer === null) return;
     const onKey = (e: KeyboardEvent): void => {
       if (e.key !== "Escape") return;
       if (viewer !== null) setViewer(null);
+      else if (pinnedOpen) setPinnedOpen(false);
       else if (settingsOpen) setSettingsOpen(false);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [settingsOpen, viewer]);
+  }, [settingsOpen, pinnedOpen, viewer]);
 
   // autoscroll + receipts
   useEffect(() => {
@@ -320,6 +324,20 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
     );
   }
 
+  // P1 pinning: id set drives row chrome + header chip count
+  const pinnedSet = new Set(pinnedIds(room));
+  function togglePin(ev: MatrixEvent): void {
+    const id = ev.getId();
+    if (!id) return;
+    void togglePinned(client, room, roomId, id).then(bump).catch(() => undefined);
+  }
+  function jumpToEvent(id: string): void {
+    const el = document.querySelector(`[data-evid="${id}"]`);
+    if (!el) return;
+    el.scrollIntoView?.({ block: "center" });
+    el.classList.add("flash");
+    setTimeout(() => el.classList.remove("flash"), 1200);
+  }
   const topic = room?.currentState.getStateEvents(EventType.RoomTopic, "")?.getContent()?.topic as
     | string
     | undefined;
@@ -338,7 +356,7 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
 
   return (
     <main
-      className={`roomview${openThread || settingsOpen ? " panel-open" : ""}`}
+      className={`roomview${openThread || settingsOpen || pinnedOpen ? " panel-open" : ""}`}
       data-testid="roomview"
     >
       <header className="room-header">
@@ -357,6 +375,16 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
             status={secStatus}
             onClick={() => (e2ee ? setSecOpen(true) : setSettingsOpen(true))}
           />
+          {pinnedSet.size > 0 && (
+            <button
+              className="pinned-chip"
+              aria-label={`Pinned messages (${pinnedSet.size})`}
+              data-testid="pinned-chip"
+              onClick={() => setPinnedOpen((v) => !v)}
+            >
+              📌 {pinnedSet.size}
+            </button>
+          )}
           <button className="settings-gear" aria-label="Room settings" onClick={() => setSettingsOpen(true)}>
             ⚙
           </button>
@@ -468,8 +496,9 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
               const mine = ev.getSender() === myUserId;
               return (
                 <div
-                  className={`row${firstInGroup ? " head" : ""}${kind === "system" ? " system" : ""}${mine && kind !== "system" ? " mine" : ""}`}
+                  className={`row${firstInGroup ? " head" : ""}${kind === "system" ? " system" : ""}${mine && kind !== "system" ? " mine" : ""}${ev.getId() && pinnedSet.has(ev.getId()!) ? " pinned" : ""}`}
                   key={ev.getId() ?? `p${gi}${ei}`}
+                  data-evid={ev.getId()}
                   data-status={sending ? "sending" : failed ? "failed" : undefined}
                   data-mine={kind === "system" ? undefined : mine ? "true" : "false"}
                 >
@@ -535,6 +564,13 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
                   </div>
                   {kind !== "system" && kind !== "redacted" && kind !== "utd" && (
                     <div className="actions" role="toolbar" aria-label="Message actions">
+                      <button
+                        aria-label={ev.getId() && pinnedSet.has(ev.getId()!) ? "Unpin message" : "Pin message"}
+                        className={ev.getId() && pinnedSet.has(ev.getId()!) ? "pin-btn on" : "pin-btn"}
+                        onClick={() => togglePin(ev)}
+                      >
+                        📌
+                      </button>
                       <button
                         aria-label="Reply"
                         onClick={() =>
@@ -620,9 +656,18 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
       {secOpen && (
         <SecuritySheet client={client} adapter={prodAdapter} onClose={() => setSecOpen(false)} />
       )}
-      {(openThread || settingsOpen) && <PaneGutter pane="panel" startDrag={startDrag} label="Resize panel" />}
+      {(openThread || settingsOpen || pinnedOpen) && <PaneGutter pane="panel" startDrag={startDrag} label="Resize panel" />}
       {settingsOpen && (
         <RoomSettings client={client} roomId={roomId} onClose={() => setSettingsOpen(false)} />
+      )}
+      {pinnedOpen && room && (
+        <PinnedPanel
+          client={client}
+          room={room}
+          onClose={() => setPinnedOpen(false)}
+          onUnpin={(id) => void togglePinned(client, room, roomId, id).then(bump).catch(() => undefined)}
+          onJump={jumpToEvent}
+        />
       )}
       {viewer !== null &&
         (() => {

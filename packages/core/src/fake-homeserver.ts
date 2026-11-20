@@ -74,6 +74,8 @@ export interface FakeHomeserverOptions {
   roomsLookup?(userId: string): Array<{ roomId: string; old?: FakeEventLike[] }>;
   /** W8: advertise m.login.sso with these IdPs; enables /login/sso/redirect. */
   sso?: { id: string; name: string; brand?: string }[];
+  /** W15: seeds the MSC4143 /rtc/transports response. */
+  rtcTransports?: { type: string; livekit_service_url?: string; url?: string }[];
 }
 
 export interface FakeHomeserverControls {
@@ -719,6 +721,14 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
     // W7: GET /voip/turnServer — static fake creds (WebRTC tests never dial out)
     if (path.endsWith("/voip/turnServer") && method === "GET") {
       return jsonRes({ username: "fake", password: "fake", uris: ["stun:stun.fake.test:3478"], ttl: 86400 });
+    }
+
+    // W15: GET /rtc/transports — MatrixRTC (MSC4143) discovery; returns BOTH
+    // stable {transports} and unstable {rtc_transports} keys so either client
+    // path resolves. Seeded via FakeHomeserverOptions.rtcTransports.
+    if (path.endsWith("/rtc/transports") && method === "GET") {
+      const transports = opts.rtcTransports ?? [];
+      return jsonRes({ transports, rtc_transports: transports });
     }
 
     // W14 item 11: GET/PUT /profile/{uid} — minimal profile store

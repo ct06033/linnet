@@ -1,11 +1,13 @@
 :root {
   --bg: #fbfbfd; --bg-alt: #f1f1f4; --fg: #16161a; --fg-dim: #6b6b76;
   --line: #e2e2e8; --accent: #4f6bed; --danger: #c0392b;
+  /* W16 ux-gate: vivid semantic colors as tokens (readable on BOTH themes) */
+  --ok: #4cc98b; --warn: #f0b429; --rec: #e5484d;
   /* W12 item 9: elevated surfaces defined PER THEME (were undefined in light,
      which left the security/recover sheet dark-on-dark and unreadable) */
   --bg-elev: #ffffff; --bg-input: #f4f4f8; --border: #d9d9e2; --err-fg: #b3261e;
   --accent-link: color-mix(in srgb, var(--accent) 78%, #04030f);
-  --rail: 240px; --roomlist: 300px;
+  --rail: 240px; --roomlist: 300px; --panel: 340px;
 }
 /* W8: explicit theme wins; media query remains the fallback before boot applies */
 [data-theme="dark"] { --bg:#101014; --bg-alt:#17171d; --fg:#ececf2; --fg-dim:#9a9aa6; --line:#26262e; --bg-elev:#1c212c; --bg-input:#171b24; --border:#3a4150; --err-fg:#ff8f88; --accent-link: color-mix(in srgb, var(--accent) 55%, #ffffff); }
@@ -164,7 +166,7 @@ main.roomview { display: flex; flex-direction: column; height: 100%; min-height:
 .edited-badge { font-size: 11px; opacity: .6; }
 .reactions { display: inline-flex; gap: 4px; flex-wrap: wrap; margin-left: 6px; vertical-align: middle; }
 .reaction-pill { border-radius: 10px; border: 1px solid var(--border, #3a3f4b); background: transparent; font-size: 12px; padding: 0 6px; cursor: pointer; }
-.reaction-pill.mine { border-color: var(--accent, #4f6bed); background: rgba(79, 107, 237, .15); }
+.reaction-pill.mine { border-color: var(--accent, #4f6bed); background: color-mix(in srgb, var(--accent) 15%, transparent); }
 .quick-react { display: none; gap: 2px; }
 .row:hover .quick-react { display: inline-flex; }
 .quick-react .qr { border: none; background: transparent; cursor: pointer; font-size: 13px; }
@@ -184,7 +186,7 @@ main.roomview { display: flex; flex-direction: column; height: 100%; min-height:
 .composer .composer-buttons button, .composer .attach { border: 1px solid var(--border, #2c313d); background: transparent; border-radius: 8px; padding: 6px 10px; cursor: pointer; color: inherit; }
 .composer .composer-buttons button.on { border-color: var(--accent, #4f6bed); color: var(--accent, #8fa3f5); }
 .composer .uploading { font-size: 12px; opacity: .7; }
-.roomlist .row.selected { background: rgba(79, 107, 237, .12); border-radius: 6px; }
+.roomlist .row.selected { background: color-mix(in srgb, var(--accent) 12%, transparent); border-radius: 6px; }
 /* W12 item 10: own messages read as accent-derived bubbles, visibly distinct
    from others in both themes, without disturbing reactions/replies/edits. */
 :root { --own-bubble: color-mix(in srgb, var(--accent) 13%, var(--bg)); --own-bubble-line: color-mix(in srgb, var(--accent) 30%, transparent); }
@@ -217,7 +219,7 @@ main.roomview:not(.panel-open) .thread-panel { display: none; }
 .poll-option { position: relative; display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; border: 1px solid var(--border, #3a3f4b); background: transparent; color: inherit; border-radius: 8px; padding: 5px 9px; margin: 3px 0; cursor: pointer; overflow: hidden; }
 .poll-option:disabled { cursor: default; opacity: .85; }
 .poll-option.mine { border-color: var(--accent, #4f6bed); }
-.poll-bar { position: absolute; inset: 0 auto 0 0; background: rgba(79, 107, 237, .18); z-index: 0; }
+.poll-bar { position: absolute; inset: 0 auto 0 0; background: color-mix(in srgb, var(--accent) 18%, transparent); z-index: 0; }
 .poll-label, .poll-count { position: relative; z-index: 1; }
 .poll-count { margin-left: auto; font-size: 12px; opacity: .75; }
 .poll-meta { display: flex; gap: 8px; align-items: center; font-size: 12px; opacity: .75; margin-top: 5px; }
@@ -235,27 +237,27 @@ main.roomview:not(.panel-open) .thread-panel { display: none; }
 .emoji-cat h4 { margin: 6px 2px 2px; font-size: 11px; text-transform: uppercase; opacity: .55; }
 .emoji-row { display: flex; flex-wrap: wrap; }
 .emoji-row button { border: none; background: transparent; font-size: 19px; padding: 3px; cursor: pointer; border-radius: 6px; }
-.emoji-row button:hover { background: rgba(255,255,255,.08); }
+.emoji-row button:hover { background: color-mix(in srgb, var(--fg) 8%, transparent); }
 .mention-menu { list-style: none; margin: 0; padding: 0; position: absolute; bottom: calc(100% + 4px); left: 8px; z-index: 40; background: var(--bg-elev, #1c212c); border: 1px solid var(--border, #333); border-radius: 10px; min-width: 240px; max-height: 180px; overflow-y: auto; }
 .mention-menu button { display: flex; gap: 8px; align-items: baseline; width: 100%; text-align: left; border: none; background: transparent; color: inherit; padding: 6px 10px; cursor: pointer; font-size: 13px; }
-.mention-menu button.active, .mention-menu button:hover { background: rgba(79, 107, 237, .18); }
+.mention-menu button.active, .mention-menu button:hover { background: color-mix(in srgb, var(--accent) 18%, transparent); }
 .mention-menu code { font-size: 11px; opacity: .6; }
 .msg-image img.thumb { cursor: zoom-in; }
-.media-loading { padding: 6px 10px; border-radius: 8px; background: rgba(255,255,255,.05); font-style: italic; opacity: .7; font-size: 13px; }
-.voice-body { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-radius: 10px; background: rgba(255,255,255,.05); min-width: 220px; }
+.media-loading { padding: 6px 10px; border-radius: 8px; background: color-mix(in srgb, var(--fg) 5%, transparent); font-style: italic; opacity: .7; font-size: 13px; }
+.voice-body { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-radius: 10px; background: color-mix(in srgb, var(--fg) 5%, transparent); min-width: 220px; }
 .voice-play { border: none; background: var(--accent, #4f6bed); color: #fff; width: 30px; height: 30px; border-radius: 50%; cursor: pointer; flex: none; }
 .wave { display: flex; align-items: center; gap: 2px; height: 28px; flex: 1; cursor: pointer; }
-.wave i { flex: 1; min-width: 2px; background: rgba(79,107,237,.65); border-radius: 2px; }
+.wave i { flex: 1; min-width: 2px; background: color-mix(in srgb, var(--accent) 65%, transparent); border-radius: 2px; }
 .voice-time { font-size: 12px; opacity: .7; flex: none; }
 .file-save { border: 1px solid var(--border,#333); background: transparent; color: inherit; border-radius: 8px; padding: 3px 10px; cursor: pointer; font-size: 12px; margin-left: 8px; }
 .file-size { font-size: 11px; opacity: .55; margin-left: 6px; }
 .voice-ready { border: none; background: transparent; color: inherit; cursor: pointer; font-size: 16px; }
 .voice-recording { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-bottom: 1px solid var(--border,#333); }
-.rec-dot { color: #e5484d; animation: recpulse 1s infinite; }
+.rec-dot { color: var(--rec); animation: recpulse 1s infinite; }
 @keyframes recpulse { 50% { opacity: .3; } }
 .rec-time { font-size: 12px; opacity: .8; }
 .rec-wave { display: flex; align-items: center; gap: 2px; height: 20px; flex: 1; }
-.rec-wave i { flex: 1; min-width: 2px; background: #e5484d; border-radius: 2px; }
+.rec-wave i { flex: 1; min-width: 2px; background: var(--rec); border-radius: 2px; }
 .viewer-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.85); z-index: 100; display: flex; align-items: center; justify-content: center; }
 .viewer-stage { display: flex; flex-direction: column; gap: 8px; max-width: 90vw; max-height: 90vh; }
 .viewer-img { max-width: 90vw; max-height: 80vh; object-fit: contain; border-radius: 6px; }
@@ -263,15 +265,15 @@ main.roomview:not(.panel-open) .thread-panel { display: none; }
 .viewer-bar button { border: none; background: rgba(255,255,255,.12); color: #fff; border-radius: 8px; padding: 4px 10px; cursor: pointer; }
 .viewer-loading { color: #aaa; padding: 30px; }
 .e2ee-badge { border: none; background: transparent; color: inherit; cursor: pointer; font-size: 12px; opacity: .9; display: inline-flex; align-items: center; gap: 4px; }
-.e2ee-badge.warn { color: #f0b429; }
-.e2ee-badge.on { color: #4cc98b; }
+.e2ee-badge.warn { color: var(--warn); }
+.e2ee-badge.on { color: var(--ok); }
 /* W14-VISIBILITY: "off" is now the LOUD red case (Not encrypted), not a
    faded chip — same hue family as .lock-off so badge + list agree. */
 .e2ee-badge.off { color: #ef4444; opacity: 1; }
 /* W14 padlock marks: SVGs (emoji cannot be colored), currentColor-driven */
 .lock { width: 14px; height: 14px; flex: none; }
 .lock-on { color: #22c55e; }
-.lock-warn { color: #f0b429; }
+.lock-warn { color: var(--warn); }
 .lock-off { color: #ef4444; }
 .enc-zone { border-top: 1px solid var(--border, #333); padding-top: 8px; }
 .enc-state { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
@@ -465,8 +467,8 @@ button.section-toggle {
 .room-settings ul { list-style: none; margin: 2px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
 .room-settings .member { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--fg); overflow-wrap: anywhere; }
 .room-settings .member .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
-.room-settings .member.joined .dot { background: #4cc98b; }
-.room-settings .member.invited .dot { background: #f0b429; }
+.room-settings .member.joined .dot { background: var(--ok); }
+.room-settings .member.invited .dot { background: var(--warn); }
 .room-settings .empty { color: var(--fg-dim); font-size: 12px; }
 .room-settings .avatar-row { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--fg-dim); }
 .room-settings .notify-zone, .room-settings .danger-zone { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--line); padding-top: 10px; }

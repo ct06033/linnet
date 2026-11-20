@@ -212,6 +212,38 @@ describe("W12a first-sync lifecycle", () => {
     sm2.stopAll();
   });
 
+  it("a never-answering /sync is declared stalled and re-synced fresh (Melchior restart regression)", { timeout: 30000 }, async () => {
+    // Repro of the exact field shape: server accepts the connection and NEVER
+    // responds (wedged on the saved since position). js-sdk waits forever —
+    // no Error event, no backoff. The watchdog must surface it, wipe the
+    // token, and land a fresh (answering) sync.
+    const base = makeFetch();
+    let syncCount = 0;
+    const stalled = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url =
+        typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (/\/sync(\?|$)/.test(url)) {
+        syncCount += 1;
+        if (syncCount === 1) return new Promise<Response>(() => undefined); // never answers
+      }
+      return base(input, init);
+    }) as unknown as typeof globalThis.fetch;
+    const kv = new MemoryKv();
+    const secrets = new MemorySecrets();
+    const sm = new SessionManager({ kv, secrets, fetchFn: stalled, stuckSyncMs: 700 });
+    const phases: SyncStatus["phase"][] = [];
+    const messages: string[] = [];
+    sm.onSyncStatus((_id, st) => {
+      phases.push(st.phase);
+      if (st.message) messages.push(st.message);
+    });
+    await sm.login({ homeserverUrl: "https://hs.test", username: ALICE.userId, password: ALICE.password });
+    await until(() => phases.includes("prepared"), 2000); // 20s budget
+    expect(messages.some((m) => /stalled/.test(m))).toBe(true); // error surfaced first...
+    expect(phases[phases.length - 1]).toBe("prepared"); // ...then recovery
+    sm.stopAll();
+  });
+
   it("transient first-sync error surfaces as status, then sync recovers and populates rooms", { timeout: 45000 }, async () => {
     const sm = new SessionManager({
       kv: new MemoryKv(),

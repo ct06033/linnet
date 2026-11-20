@@ -41,6 +41,8 @@ export interface RoomSummary {
   avatarUrl?: string;
   /** W14 item 6: standard Matrix "m.favourite" room tag (Element-interop) */
   favourite: boolean;
+  /** P1 sorts: origin_server_ts of the newest loaded event (0 = none) */
+  lastTs: number;
 }
 
 export interface SpaceChildRef {
@@ -83,6 +85,8 @@ interface LiveSession {
   retryTimer?: ReturnType<typeof setTimeout>;
   /** W12: stalled-sync watchdog timer (never-answering /sync) */
   stuckTimer?: ReturnType<typeof setTimeout>;
+  /** P1 presence: user preference applied once after the first Prepared */
+  presenceApplied?: boolean;
   retryAttempt: number;
   lastStatus: SyncStatus;
 }
@@ -102,6 +106,21 @@ export interface SyncStatus {
   fatal?: boolean;
   /** ms until the next automatic restart (when one is scheduled) */
   retryInMs?: number;
+}
+
+export type PresenceChoice = "online" | "unavailable" | "offline";
+export interface PresencePref {
+  presence: PresenceChoice;
+  statusMsg?: string;
+}
+const PRESENCE_KV_KEY = "linnet.presence.v1";
+
+async function applyPresence(client: MatrixClient, pref: PresencePref): Promise<void> {
+  try {
+    await client.setPresence({ presence: pref.presence, status_msg: pref.statusMsg } as never);
+  } catch (err) {
+    console.warn("linnet: setPresence failed (homeserver presence disabled?)", err);
+  }
 }
 
 /** LiveSession factory — W12a: every session starts "preparing" with retry state zeroed. */
@@ -336,6 +355,11 @@ export class SessionManager {
           if (s.lastStatus.phase !== "prepared") {
             s.lastStatus = { phase: "prepared" };
             for (const l of this.statusListeners) l(accountId, s.lastStatus);
+            // P1 presence: push the stored (or default online) presence once
+            if (!s.presenceApplied) {
+              s.presenceApplied = true;
+              void this.presenceFor(accountId).then((p) => applyPresence(s.client, p ?? { presence: "online" }));
+            }
           }
           // W14 item 6: feed js-sdk's Room.tags from the RAW sync response —
           // matrix-js-sdk 45.1.0 ignores the spec `tags: {events}` block of
@@ -561,6 +585,35 @@ export class SessionManager {
     }
   }
 
+  /**
+   * P1 presence: remember the user's choice per account and push it to the
+   * homeserver. Applied once after the first Prepared sync per session (and
+   * on change). Absent pref = "online" — matching every other client, so the
+   * user is not invisibly offline to Element contacts. setPresence failures
+   * (HS with presence disabled) are logged once and swallowed: display side
+   * degrades to "unknown" dots.
+   */
+  async setPresenceFor(accountId: string, pref: PresencePref): Promise<void> {
+    const all = await this.readPresencePrefs();
+    all[accountId] = pref;
+    await this.opts.kv.set(PRESENCE_KV_KEY, JSON.stringify(all));
+    const s = this.live.get(accountId);
+    if (s) void applyPresence(s.client, pref);
+  }
+
+  async presenceFor(accountId: string): Promise<PresencePref | null> {
+    return (await this.readPresencePrefs())[accountId] ?? null;
+  }
+
+  private async readPresencePrefs(): Promise<Record<string, PresencePref>> {
+    try {
+      const raw = await this.opts.kv.get(PRESENCE_KV_KEY);
+      return raw ? (JSON.parse(raw) as Record<string, PresencePref>) : {};
+    } catch {
+      return {};
+    }
+  }
+
   stopAll(): void {
     for (const s of this.live.values()) {
       this.clearRetry(s);
@@ -659,6 +712,10 @@ function summarize(client: MatrixClient): RoomSummary[] {
       // room.addAccountData with an m.tag event feeds it), so SessionManager
       // folds the raw sync data in via applyTagEvents() before summarizing.
       favourite: Boolean(room.tags?.["m.favourite"]),
+      lastTs: (() => {
+        const live = room.getLiveTimeline().getEvents();
+        return live.length ? live[live.length - 1]!.getTs() : 0;
+      })(),
     });
   }
   return out;

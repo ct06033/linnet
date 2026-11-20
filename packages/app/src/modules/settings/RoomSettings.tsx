@@ -14,6 +14,8 @@ import {
 import type { LinnetModule } from "@linnet/core";
 import { uploadBytes } from "../media/core.js";
 import { LockMark } from "../security/Security.js";
+import { PresenceDot } from "../ui/presence.js";
+import { isIgnored, setIgnore } from "../messages/moderation.js";
 import { modeFor, readPrefs, setRoomMode, writePrefs, type NotifyMode } from "../notify/model.js";
 
 export interface RoomSettingsProps {
@@ -167,9 +169,19 @@ export function RoomSettings({ client, roomId, onClose }: RoomSettingsProps): Re
         <h4>Joined ({members.joined.length})</h4>
         <ul>
           {members.joined.map((uid) => (
-            <li key={uid} className="member joined">
+            <li key={uid} className={`member joined${isIgnored(client, uid) ? " ignored" : ""}`}>
+              <PresenceDot client={client} userId={uid} />
               {uid}
               {uid === me ? " (you)" : ""}
+              {uid !== me && (
+                <button
+                  className="member-ignore"
+                  aria-label={isIgnored(client, uid) ? `Unignore ${uid}` : `Ignore ${uid}`}
+                  onClick={() => void setIgnore(client, uid, !isIgnored(client, uid)).catch(() => undefined)}
+                >
+                  {isIgnored(client, uid) ? "unignore" : "ignore"}
+                </button>
+              )}
             </li>
           ))}
           {members.joined.length === 0 && <li className="empty">no joined members</li>}

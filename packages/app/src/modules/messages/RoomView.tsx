@@ -6,6 +6,7 @@
  */
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ClientEvent,
   Direction,
   EventType,
   EventStatus,
@@ -33,8 +34,12 @@ import {
 } from "./model.js";
 import { Composer, type ComposerMode } from "./Composer.js";
 import { ThreadPanel } from "./ThreadPanel.js";
+import { PinnedPanel, pinnedIds, togglePinned } from "./pinned.js";
+import { SearchPanel } from "./SearchPanel.js";
+import { isIgnored, reportMessage, setIgnore } from "./moderation.js";
 import { Viewer } from "../media/renderers.js";
 import { Avatar } from "../ui/avatar.js";
+import { PresenceDot } from "../ui/presence.js";
 import { PaneGutter, usePanes } from "../settings/panes.js";
 import { SecurityBanner, SecuritySheet } from "../security/Security.js";
 import { prodAdapter } from "../security/prod.js";
@@ -63,6 +68,13 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
   const [secOpen, setSecOpen] = useState(false);
   const [secStatus, setSecStatus] = useState<SecurityStatus | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [pinnedOpen, setPinnedOpen] = useState(false); // P1 pinning
+  const [searchOpen, setSearchOpen] = useState(false); // P1 search/jump-to-date
+  // P1 moderation: revealed-ignored rows + open report panel {eventId, sender}
+  const [revealed, setRevealed] = useState<Set<string>>(new Set());
+  const [reportFor, setReportFor] = useState<{ eventId: string; sender: string } | null>(null);
+  const [reportReason, setReportReason] = useState("");
+  const [reportState, setReportState] = useState<"idle" | "busy" | "done" | "error">("idle");
   const [callErr, setCallErr] = useState<string | null>(null);
   const [groupOpen, setGroupOpen] = useState(false); // W15: group call stage
   // W14 item 14: the right panel (thread / room settings) is resizable
@@ -89,6 +101,8 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
     };
     const onTyping = (): void => bump();
     const onEcho = (_event: MatrixEvent, _room: Room | undefined, _data?: unknown): void => bump();
+    const onAccountData = (): void => bump(); // P1 moderation: ignored list changed
+    client.on(ClientEvent.AccountData, onAccountData);
     client.on(RoomEvent.Timeline, onTimeline);
     client.on(RoomStateEvent.Update, onUpdate);
     client.on(RoomMemberEvent.Typing, onTyping);
@@ -98,6 +112,7 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
       client.removeListener(RoomStateEvent.Update, onUpdate);
       client.removeListener(RoomMemberEvent.Typing, onTyping);
       client.removeListener(RoomEvent.LocalEchoUpdated, onEcho);
+      client.removeListener(ClientEvent.AccountData, onAccountData);
     };
   }, [client, roomId, bump]);
 
@@ -181,16 +196,19 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
   }, [openThread]);
 
   // W12 item 2: Esc also closes the settings panel and the image viewer
+  // (P1: and the pinned list)
   useEffect(() => {
-    if (!settingsOpen && viewer === null) return;
+    if (!settingsOpen && !pinnedOpen && !searchOpen && viewer === null) return;
     const onKey = (e: KeyboardEvent): void => {
       if (e.key !== "Escape") return;
       if (viewer !== null) setViewer(null);
+      else if (searchOpen) setSearchOpen(false);
+      else if (pinnedOpen) setPinnedOpen(false);
       else if (settingsOpen) setSettingsOpen(false);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [settingsOpen, viewer]);
+  }, [settingsOpen, pinnedOpen, searchOpen, viewer]);
 
   // autoscroll + receipts
   useEffect(() => {
@@ -320,6 +338,20 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
     );
   }
 
+  // P1 pinning: id set drives row chrome + header chip count
+  const pinnedSet = new Set(pinnedIds(room));
+  function togglePin(ev: MatrixEvent): void {
+    const id = ev.getId();
+    if (!id) return;
+    void togglePinned(client, room, roomId, id).then(bump).catch(() => undefined);
+  }
+  function jumpToEvent(id: string): void {
+    const el = document.querySelector(`[data-evid="${id}"]`);
+    if (!el) return;
+    el.scrollIntoView?.({ block: "center" });
+    el.classList.add("flash");
+    setTimeout(() => el.classList.remove("flash"), 1200);
+  }
   const topic = room?.currentState.getStateEvents(EventType.RoomTopic, "")?.getContent()?.topic as
     | string
     | undefined;
@@ -338,7 +370,7 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
 
   return (
     <main
-      className={`roomview${openThread || settingsOpen ? " panel-open" : ""}`}
+      className={`roomview${openThread || settingsOpen || pinnedOpen || searchOpen ? " panel-open" : ""}`}
       data-testid="roomview"
     >
       <header className="room-header">
@@ -357,6 +389,24 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
             status={secStatus}
             onClick={() => (e2ee ? setSecOpen(true) : setSettingsOpen(true))}
           />
+          <button
+            className="search-btn"
+            aria-label="Search this room"
+            data-testid="search-open"
+            onClick={() => setSearchOpen((v) => !v)}
+          >
+            🔍
+          </button>
+          {pinnedSet.size > 0 && (
+            <button
+              className="pinned-chip"
+              aria-label={`Pinned messages (${pinnedSet.size})`}
+              data-testid="pinned-chip"
+              onClick={() => setPinnedOpen((v) => !v)}
+            >
+              📌 {pinnedSet.size}
+            </button>
+          )}
           <button className="settings-gear" aria-label="Room settings" onClick={() => setSettingsOpen(true)}>
             ⚙
           </button>
@@ -399,11 +449,80 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
         </div>
         <div className="sub">
           <span className="members">{room?.getJoinedMemberCount?.() ?? 0} members</span>
+          {(() => {
+            // W15 2b: live "in call" presence from m.call.member state rows
+            const evs = room?.currentState?.getStateEvents("m.call.member") ?? [];
+            const inCall = new Set<string>();
+            for (const ev of evs) {
+              const c = ev.getContent() as Record<string, unknown>;
+              const m = c?.["m.call.member"] as { member_id?: string } | undefined;
+              if (m && typeof m.member_id === "string") inCall.add(ev.getSender() ?? "?");
+            }
+            if (inCall.size === 0) return null;
+            return (
+              <button
+                className="in-call-chip"
+                data-testid="in-call-chip"
+                aria-label={`Open group call — ${inCall.size} in call`}
+                onClick={() => setGroupOpen(true)}
+              >
+                📞 {inCall.size} in call
+              </button>
+            );
+          })()}
+          {(() => {
+            // P1 presence: 1:1 rooms show the partner's state inline
+            const others = room ? Object.values(room.getJoinedMembers()).filter((m) => m.userId !== myUserId) : [];
+            if (others.length !== 1) return null;
+            return <PresenceDot client={client} userId={others[0]!.userId} />;
+          })()}
         </div>
       </header>
 
       {groupOpen && (
         <GroupCallStage client={client} roomId={roomId} onClose={() => setGroupOpen(false)} />
+      )}
+      {reportFor && (
+        <div className="explore-scrim" role="presentation" onClick={() => setReportFor(null)}>
+          <section className="report-dialog" role="dialog" aria-label="Report message" onClick={(e) => e.stopPropagation()} data-testid="report-dialog">
+            <strong>Report message from {shortName(reportFor.sender)}</strong>
+            <input
+              type="text"
+              aria-label="Report reason"
+              placeholder="Why are you reporting this?"
+              value={reportReason}
+              onChange={(e) => setReportReason(e.target.value)}
+            />
+            {reportState === "done" ? (
+              <p className="muted" data-testid="report-done">Reported — thank you.</p>
+            ) : (
+              <div className="report-actions">
+                <button
+                  onClick={() => {
+                    setReportState("busy");
+                    void reportMessage(client, roomId, reportFor.eventId, reportReason)
+                      .then(() => setReportState("done"))
+                      .catch(() => setReportState("error"));
+                  }}
+                  disabled={reportState === "busy"}
+                  data-testid="report-submit"
+                >
+                  {reportState === "busy" ? "Sending…" : "Submit report"}
+                </button>
+                <button
+                  onClick={() => {
+                    void setIgnore(client, reportFor.sender, true).then(() => setReportFor(null));
+                  }}
+                  data-testid="report-ignore"
+                >
+                  Ignore {shortName(reportFor.sender)}
+                </button>
+                <button aria-label="Close report" onClick={() => setReportFor(null)}>✕</button>
+              </div>
+            )}
+            {reportState === "error" && <p className="send-fail">report failed</p>}
+          </section>
+        </div>
       )}
 
       <div className="body">
@@ -429,6 +548,18 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
           <div className="group">
             {g.events.map((ev, ei) => {
               const kind = kindOf(ev);
+              // P1 moderation: ignored senders collapse to one honest line
+              const evid = ev.getId();
+              if (evid && isIgnored(client, ev.getSender()) && !revealed.has(evid) && kind !== "system") {
+                return (
+                  <div className="row ignored-line" key={evid} data-testid={`ignored-${evid}`}>
+                    <em className="muted">
+                      Ignored message from {shortName(ev.getSender() ?? "?")} ·{" "}
+                      <button onClick={() => setRevealed((s) => new Set(s).add(evid))}>Show</button>
+                    </em>
+                  </div>
+                );
+              }
               const firstInGroup = ei === 0 && kind !== "system" && kind !== "redacted";
               const contrib = registry
                 ?.list("timeline-item")
@@ -468,19 +599,23 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
               const mine = ev.getSender() === myUserId;
               return (
                 <div
-                  className={`row${firstInGroup ? " head" : ""}${kind === "system" ? " system" : ""}${mine && kind !== "system" ? " mine" : ""}`}
+                  className={`row${firstInGroup ? " head" : ""}${kind === "system" ? " system" : ""}${mine && kind !== "system" ? " mine" : ""}${ev.getId() && pinnedSet.has(ev.getId()!) ? " pinned" : ""}`}
                   key={ev.getId() ?? `p${gi}${ei}`}
+                  data-evid={ev.getId()}
                   data-status={sending ? "sending" : failed ? "failed" : undefined}
                   data-mine={kind === "system" ? undefined : mine ? "true" : "false"}
                 >
                   {firstInGroup && (
                     <div className="who">
-                      <Avatar
-                        client={client}
-                        mxc={memberAvatar(ev.getSender())}
-                        name={displayNameOf(client, ev.getSender() ?? "?")}
-                        size={26}
-                      />
+                      <span className="av-wrap">
+                        <Avatar
+                          client={client}
+                          mxc={memberAvatar(ev.getSender())}
+                          name={displayNameOf(client, ev.getSender() ?? "?")}
+                          size={26}
+                        />
+                        <PresenceDot client={client} userId={ev.getSender()} />
+                      </span>
                       <strong>{displayNameOf(client, ev.getSender() ?? "?")}</strong>
                     </div>
                   )}
@@ -536,6 +671,13 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
                   {kind !== "system" && kind !== "redacted" && kind !== "utd" && (
                     <div className="actions" role="toolbar" aria-label="Message actions">
                       <button
+                        aria-label={ev.getId() && pinnedSet.has(ev.getId()!) ? "Unpin message" : "Pin message"}
+                        className={ev.getId() && pinnedSet.has(ev.getId()!) ? "pin-btn on" : "pin-btn"}
+                        onClick={() => togglePin(ev)}
+                      >
+                        📌
+                      </button>
+                      <button
                         aria-label="Reply"
                         onClick={() =>
                           setMode(() => {
@@ -559,6 +701,18 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
                           }}
                         >
                           ✎
+                        </button>
+                      )}
+                      {ev.getSender() !== myUserId && ev.getId() && (
+                        <button
+                          aria-label="Report message"
+                          onClick={() => {
+                            setReportFor({ eventId: ev.getId()!, sender: ev.getSender() ?? "?" });
+                            setReportReason("");
+                            setReportState("idle");
+                          }}
+                        >
+                          ⚑
                         </button>
                       )}
                       {ev.getSender() === myUserId && (
@@ -620,9 +774,21 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
       {secOpen && (
         <SecuritySheet client={client} adapter={prodAdapter} onClose={() => setSecOpen(false)} />
       )}
-      {(openThread || settingsOpen) && <PaneGutter pane="panel" startDrag={startDrag} label="Resize panel" />}
+      {(openThread || settingsOpen || pinnedOpen || searchOpen) && <PaneGutter pane="panel" startDrag={startDrag} label="Resize panel" />}
       {settingsOpen && (
         <RoomSettings client={client} roomId={roomId} onClose={() => setSettingsOpen(false)} />
+      )}
+      {searchOpen && room && (
+        <SearchPanel client={client} room={room} onClose={() => setSearchOpen(false)} onJump={(id) => { jumpToEvent(id); setSearchOpen(false); }} />
+      )}
+      {pinnedOpen && room && (
+        <PinnedPanel
+          client={client}
+          room={room}
+          onClose={() => setPinnedOpen(false)}
+          onUnpin={(id) => void togglePinned(client, room, roomId, id).then(bump).catch(() => undefined)}
+          onJump={jumpToEvent}
+        />
       )}
       {viewer !== null &&
         (() => {

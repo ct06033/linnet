@@ -40,6 +40,8 @@ export interface FakeRoom {
   members?: Record<string, string>;
   /** newest-last seed timeline */
   events?: FakeEventLike[];
+  /** W15 2b: extra raw state events (type/state_key/content[/sender]) merged into room state */
+  state?: { type: string; state_key: string; content: Record<string, unknown>; sender?: string }[];
   /** older history returned by /messages back-pagination */
   old?: FakeEventLike[];
   /** W5b: seed m.room.create with room_type m.space */
@@ -48,6 +50,8 @@ export interface FakeRoom {
   children?: Record<string, { order?: string; via?: string[] }>;
   /** W14 item 11: mxc URI seeded into m.room.avatar state */
   avatar?: string;
+  /** P1 pinning: event ids seeded into m.room.pinned_events state */
+  pinned?: string[];
   /** W14 item 6: initial room tags for the snapshot user (tagName -> meta) */
   tags?: Record<string, unknown>;
   /** W5b: replace the default m.room.power_levels content (PL-gating tests) */
@@ -67,6 +71,8 @@ export interface FakeCallRecord {
 }
 
 export interface FakeHomeserverOptions {
+  /** P1 explore: rooms advertised by GET /publicRooms */
+  publicRooms?: { roomId: string; name?: string; topic?: string; members?: number }[];
   accounts: FakeAccount[];
   /** First /sync body per user id; defaults to an empty snapshot. */
   sync?: (userId: string) => unknown;
@@ -146,6 +152,8 @@ export function makeSyncSnapshot(opts: {
   invites?: FakeInvite[];
   /** Room ids listed under m.direct for opts.userId (drives the isDM heuristic). */
   direct?: string[];
+  /** P1 presence: fake /sync presence events per user. */
+  presence?: { userId: string; presence: string; statusMsg?: string; currentlyActive?: boolean; lastActiveAgo?: number }[];
   /** W6: extra global account_data events (type -> content). */
   accountData?: Record<string, Record<string, unknown>>;
   nextBatch?: string;
@@ -197,6 +205,12 @@ export function makeSyncSnapshot(opts: {
     }
     if (r.avatar) {
       out.push(ev(roomId, "m.room.avatar", { url: r.avatar }, { state_key: "" }));
+    }
+    if (r.pinned?.length) {
+      out.push(ev(roomId, "m.room.pinned_events", { pinned: r.pinned }, { state_key: "" }));
+    }
+    for (const s of r.state ?? []) {
+      out.push(ev(roomId, s.type, s.content, { state_key: s.state_key, event_id: `$seed-${s.type}-${s.state_key}:${roomId}`, ...(s.sender ? { sender: s.sender } : {}) }));
     }
     // W5b: m.space.child links (state_key = child room id; via required to be active)
     for (const [childId, c] of Object.entries(r.children ?? {})) {
@@ -261,7 +275,18 @@ export function makeSyncSnapshot(opts: {
         ...Object.entries(opts.accountData ?? {}).map(([type, content]) => ev("$root", type, content)),
       ],
     },
-    presence: { events: [] },
+    presence: {
+      events: (opts.presence ?? []).map((p) => ({
+        type: "m.presence",
+        sender: p.userId,
+        content: {
+          presence: p.presence,
+          ...(p.statusMsg ? { status_msg: p.statusMsg } : {}),
+          currently_active: p.currentlyActive ?? p.presence === "online",
+          last_active_ago: p.lastActiveAgo ?? (p.presence === "online" ? 1000 : 3_600_000),
+        },
+      })),
+    },
     to_device: { events: [] },
     device_lists: { changed: {}, left: {} },
     device_one_time_keys_count: {},
@@ -391,6 +416,20 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
     if (path.endsWith("/versions")) return jsonRes({ versions: ["v1.1", "v1.2", "v1.3", "v1.4", "v1.5", "v1.6", "v1.7", "v1.8", "v1.9", "v1.10", "v1.11"] });
     if (path.endsWith("/capabilities")) return jsonRes({ capabilities: {} });
 
+    // P1 explore/join: the room directory
+    if (path.endsWith("/publicRooms") && method === "GET") {
+      const list = (opts.publicRooms ?? []).map((r) => ({
+        room_id: r.roomId,
+        name: r.name,
+        topic: r.topic,
+        num_joined_members: r.members ?? 1,
+        world_readable: true,
+        guest_can_join: true,
+        aliases: [],
+      }));
+      return jsonRes({ chunk: list, total: list.length });
+    }
+
     // W8 SSO: flow discovery (GET /login) + redirect bounce.
     // The fake "IdP" authenticates whoever the request names via fake_as=
     // (a test-only affordance; production code just window.location.assign's
@@ -438,6 +477,21 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
         access_token: hit.accessToken,
         device_id: hit.deviceId ?? "FAKEDEV",
         user_id: hit.userId,
+      });
+    }
+
+    // W15 2b: OpenID token mint for embedded widgets (client.getOpenIdToken
+    // POSTs /user/{userId}/loginToken; Element Call then trades it at the
+    // LiveKit service's same-origin /get_token).
+    if (/\/user\/[^/]+\/loginToken$/.test(path) && method === "POST") {
+      if (!account || loggedOut.has(account.accessToken)) {
+        return jsonRes({ errcode: "M_UNKNOWN_TOKEN", error: "unknown token" }, 401);
+      }
+      return jsonRes({
+        access_token: `openid-${account.userId.replace(/[^a-z0-9]/gi, "")}-fake`,
+        token_type: "Bearer",
+        expires_in: 3600000,
+        matrix_server_name: "hs.test",
       });
     }
 
@@ -588,6 +642,15 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
     }
 
     // PUT /rooms/{roomId}/typing/{userId}
+    if (/\/presence\/[^/]+\/status$/.test(path) && method === "PUT") {
+      record("PUT", path, await bodyJson(init));
+      return jsonRes({});
+    }
+    // P1 moderation: POST /rooms/{}/report/{eventId}
+    if (/\/report\//.test(path) && method === "POST") {
+      record("POST", path, await bodyJson(init));
+      return jsonRes({});
+    }
     if (/\/rooms\/[^/]+\/typing\/[^/]+$/.test(path) && method === "PUT") {
       record("PUT", path, await bodyJson(init));
       return jsonRes({});

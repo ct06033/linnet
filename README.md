@@ -4,12 +4,15 @@ A Matrix chat client that sits **between [Element](https://element.io) and [Cinn
 calmer than Element, more capable than Cinny. Desktop-first for **Windows and Linux**, built as a
 vanilla TypeScript renderer inside an Electron shell.
 
-> **v0.1.1** is the bug-list + polish wave off real-world v0.1.0 use: first-sync hang fixed,
-> E2EE on by default for new rooms (opt-out in the dialog), display density (compact/medium/
-> relaxed), click-away menus, full space names, unified add button, higher-contrast recovery
-> dialog, own-message highlighting, Linux app-menu icon, sensible minimum window size.
-> Installers are unsigned (see Honest limits below) and the app icon is still a placeholder.
-> Feedback welcome in [Issues](https://github.com/ct06033/linnet/issues).
+> **v0.1.2** is the reliability wave off real-world v0.1.1 use: restart-sync hangs are fixed
+> three ways — a **stalled-sync watchdog** (a saved sync position the server never answers,
+> the exact field failure, is now detected, surfaced, wiped, and re-synced fresh), an
+> **always-visible sync error banner** (it previously only rendered for zero-room accounts),
+> and an honest first-run empty state. Scrolling the chat **no longer pushes the whole UI up**
+> (layout containment, measured live in Chromium). The v0.1.1 polish wave (E2EE default-on,
+> density modes, click-away menus, unified add button, contrast and own-message fixes)
+> remains intact. Installers are unsigned (see Honest limits below) and the app icon is
+> still a placeholder. Feedback welcome in [Issues](https://github.com/ct06033/linnet/issues).
 
 ## Download
 
@@ -17,9 +20,9 @@ Grab an installer from the [latest release](https://github.com/ct06033/linnet/re
 
 | Platform | File | Install |
 |---|---|---|
-| Windows 10/11 x64 | `Linnet-0.1.1-win-x64.exe` | NSIS installer (per-user, choose folder) |
-| Debian/Ubuntu x64 | `Linnet-0.1.1-linux-x64.deb` | `sudo apt install ./Linnet-0.1.1-linux-x64.deb` |
-| Any Linux x64 | `Linnet-0.1.1-linux-x64.AppImage` | `chmod +x`, run |
+| Windows 10/11 x64 | `Linnet-0.1.2-win-x64.exe` | NSIS installer (per-user, choose folder) |
+| Debian/Ubuntu x64 | `Linnet-0.1.2-linux-x64.deb` | `sudo apt install ./Linnet-0.1.2-linux-x64.deb` |
+| Any Linux x64 | `Linnet-0.1.2-linux-x64.AppImage` | `chmod +x`, run |
 
 ## What's in (MVP)
 

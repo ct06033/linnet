@@ -51,6 +51,13 @@ export interface SessionManagerOptions {
   /** Enable rust crypto (Megolm E2EE) for every session; initialized before
    *  the first startClient so to-device key sharing is processed. Default false. */
   initCrypto?: boolean;
+  /** W12 restart-sync (Melchior case): a /sync request that NEVER answers
+   *  (server wedged on the saved `since` position) leaves js-sdk waiting
+   *  forever — no error, no banner, no recovery. If no sync response arrives
+   *  this many ms after (re)starting the loop, declare it stalled: surface an
+   *  error, wipe the stored sync token, and re-sync fresh. Default 75s;
+   *  tests shorten it. */
+  stuckSyncMs?: number;
 }
 
 interface LiveSession {
@@ -60,6 +67,8 @@ interface LiveSession {
   attached: boolean;
   /** W12a: first-sync hang fix — error surfacing + restart-with-backoff state */
   retryTimer?: ReturnType<typeof setTimeout>;
+  /** W12: stalled-sync watchdog timer (never-answering /sync) */
+  stuckTimer?: ReturnType<typeof setTimeout>;
   retryAttempt: number;
   lastStatus: SyncStatus;
 }
@@ -107,11 +116,13 @@ export class SessionManager {
   private readonly listeners = new Set<(accountId: string, rooms: RoomSummary[]) => void>();
   private readonly statusListeners = new Set<(accountId: string, status: SyncStatus) => void>();
   private readonly fetchFn?: typeof globalThis.fetch;
+  private readonly stuckSyncMs: number;
   activeId: string | null = null;
 
   constructor(private readonly opts: SessionManagerOptions) {
     this.store = new AccountStore(opts.kv);
     this.fetchFn = opts.fetchFn;
+    this.stuckSyncMs = opts.stuckSyncMs ?? 75_000;
   }
 
   listAccounts(): Promise<AccountMetadata[]> {
@@ -261,6 +272,7 @@ export class SessionManager {
         if (state === SyncState.Prepared || state === SyncState.Syncing) {
           // W12a: first sync (or a recovery sync) succeeded — retry budget resets.
           this.clearRetry(s);
+          this.clearStuck(s);
           if (s.lastStatus.phase !== "prepared") {
             s.lastStatus = { phase: "prepared" };
             for (const l of this.statusListeners) l(accountId, s.lastStatus);
@@ -281,6 +293,10 @@ export class SessionManager {
       s.started = true;
       s.lastStatus = { phase: "preparing" };
       for (const l of this.statusListeners) l(accountId, s.lastStatus);
+      // W12 (Melchior restart case): arm the stalled-sync watchdog BEFORE
+      // startClient — if no sync response ever arrives (server wedged on the
+      // saved since position), js-sdk waits forever without emitting Error.
+      this.armStuck(accountId, s);
       // detached pending ordering → Room.getPendingEvents() works for the
       // RoomView optimistic echo; threadSupport organises MSC3440 relations
       // into Room.getThreads() (both are startClient opts in js-sdk 45 — probed)
@@ -325,6 +341,7 @@ export class SessionManager {
   }
 
   private handleSyncError(accountId: string, s: LiveSession, reconnecting: boolean, thrown?: unknown): void {
+    this.clearStuck(s);
     const data = (s.client.getSyncStateData?.() ?? {}) as {
       error?: { errcode?: string; httpStatus?: number; statusCode?: number; message?: string };
     };
@@ -359,6 +376,48 @@ export class SessionManager {
       s.retryTimer = undefined;
     }
     s.retryAttempt = 0;
+  }
+
+  private clearStuck(s: LiveSession): void {
+    if (s.stuckTimer) {
+      clearTimeout(s.stuckTimer);
+      s.stuckTimer = undefined;
+    }
+  }
+
+  /**
+   * W12 stalled-sync watchdog (Melchior restart bug): a /sync that never
+   * answers leaves the loop silently waiting — no Error event, no backoff, no
+   * UI explanation. After stuckSyncMs with zero sync progress: surface an
+   * error (so the banner shows), wipe the stored sync token (the saved since
+   * position is what the server is wedged on), and restart the loop fresh.
+   */
+  private armStuck(accountId: string, s: LiveSession): void {
+    this.clearStuck(s);
+    s.stuckTimer = setTimeout(() => {
+      s.stuckTimer = undefined;
+      if (!s.started || s.lastStatus.phase === "prepared") return;
+      console.error(`linnet: sync stalled (${accountId}) — no response in ${this.stuckSyncMs}ms, re-syncing without saved token`);
+      s.lastStatus = { phase: "error", message: "sync stalled — homeserver never answered the sync request" };
+      for (const l of this.statusListeners) l(accountId, s.lastStatus);
+      try {
+        const store = (s.client as unknown as {
+          getStore?: () => { setSyncToken?: (t: string | null) => void } | undefined;
+        }).getStore?.();
+        store?.setSyncToken?.(null);
+      } catch (err) {
+        console.warn("linnet: could not wipe saved sync token", err);
+      }
+      // force the fresh restart path (started=false -> startSync re-arms +
+      // startClient with no since)
+      try {
+        s.client.stopClient();
+      } catch {
+        /* already stopped */
+      }
+      s.started = false;
+      if (this.live.has(accountId)) this.startSync(accountId);
+    }, this.stuckSyncMs);
   }
 
   onRooms(listener: (accountId: string, rooms: RoomSummary[]) => void): () => void {
@@ -397,6 +456,7 @@ export class SessionManager {
   stopAll(): void {
     for (const s of this.live.values()) {
       this.clearRetry(s);
+      this.clearStuck(s);
       s.client.stopClient();
     }
   }

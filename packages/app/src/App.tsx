@@ -24,6 +24,8 @@ import {
 } from "./modules/spaces/tree.js";
 import { SectionHeader, useCollapsedSections } from "./modules/roomlist/sections.js";
 import { Avatar } from "./modules/ui/avatar.js";
+import { PaneGutter, usePanes } from "./modules/settings/panes.js";
+import { uploadBytes } from "./modules/media/core.js";
 import type { MatrixClient } from "matrix-js-sdk";
 import { NotificationEngine, makeNotifierPort } from "./modules/notify/engine.js";
 import { CallBanner } from "./modules/call/CallUi.js";
@@ -69,6 +71,8 @@ export function App(): ReactNode {
   useClickAway(railAddRef, () => setRailAddOpen(false), railAddOpen);
   // W14 item 7: collapsible People/Rooms/Favourites/nested sections
   const { collapsed, toggle: toggleSection } = useCollapsedSections();
+  // W14 item 14: resizable rail/list panels
+  const { startDrag } = usePanes();
   useEffect(() => {
     applyAppearance.current = mountAppearance();
   }, []);
@@ -157,6 +161,31 @@ export function App(): ReactNode {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sm, activeId, phase]);
+
+  // W14 item 11: own profile avatar (uploaded via the account menu)
+  const [myAvatar, setMyAvatar] = useState<string | null>(null);
+  useEffect(() => {
+    if (!clientForView) return;
+    const me = clientForView.getUserId();
+    const u = me ? clientForView.getUser(me) : undefined;
+    setMyAvatar((u as { avatarUrl?: string } | undefined)?.avatarUrl ?? null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clientForView]);
+  function uploadProfileAvatar(file: File): void {
+    if (!clientForView) return;
+    void (async () => {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const url = await uploadBytes(clientForView, bytes, file.type || "image/png");
+      await clientForView.setAvatarUrl(url);
+      setMyAvatar(url);
+    })().catch((err) => console.warn("linnet: profile avatar upload failed", err));
+  }
+  function removeProfileAvatar(): void {
+    void clientForView
+      ?.setAvatarUrl("")
+      .then(() => setMyAvatar(null))
+      .catch(() => undefined);
+  }
 
   // W6: notification engine — lives with the active client, dies on switch
   const focusedRef = useRef<string | null>(null);
@@ -252,6 +281,30 @@ export function App(): ReactNode {
           </div>
           {menuOpen && (
             <div className="account-menu" role="menu">
+            {/* W14 item 11: profile avatar — sets the mxc every room's member
+                event will carry (Synapse propagates profile changes). */}
+            <div className="profile-row" role="group" aria-label="Profile">
+              <span className="lbl">You</span>
+              <Avatar client={clientForView} mxc={myAvatar} name={activeName} size={24} />
+              <label className="avatar-pick" title="Upload a profile picture">
+                <input
+                  type="file"
+                  accept="image/*"
+                  aria-label="Profile avatar file"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) uploadProfileAvatar(f);
+                    e.target.value = "";
+                  }}
+                />
+                <span>Change…</span>
+              </label>
+              {myAvatar && (
+                <button className="danger" aria-label="Remove profile avatar" onClick={removeProfileAvatar}>
+                  ✕
+                </button>
+              )}
+            </div>
             {accounts.map((a) => (
               <div key={a.accountId} className="menu-row">
                 <button
@@ -349,6 +402,7 @@ export function App(): ReactNode {
           </button>
         </div>
       </nav>
+      <PaneGutter pane="rail" startDrag={startDrag} label="Resize spaces rail" />
 
       <aside className="roomlist" aria-label="Rooms">
         <div className="roomlist-scroll">
@@ -478,6 +532,7 @@ export function App(): ReactNode {
           </div>
         )}
       </aside>
+      <PaneGutter pane="roomlist" startDrag={startDrag} label="Resize room list" />
 
       <main className="timeline" id="linnet-main">
         {/* W12 restart-sync gap: sync errors must be VISIBLE even when the

@@ -35,6 +35,7 @@ import { Composer, type ComposerMode } from "./Composer.js";
 import { ThreadPanel } from "./ThreadPanel.js";
 import { Viewer } from "../media/renderers.js";
 import { Avatar } from "../ui/avatar.js";
+import { PaneGutter, usePanes } from "../settings/panes.js";
 import { SecurityBanner, SecuritySheet } from "../security/Security.js";
 import { prodAdapter } from "../security/prod.js";
 import { RoomSettings } from "../settings/RoomSettings.js";
@@ -62,6 +63,8 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
   const [secStatus, setSecStatus] = useState<SecurityStatus | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [callErr, setCallErr] = useState<string | null>(null);
+  // W14 item 14: the right panel (thread / room settings) is resizable
+  const { startDrag } = usePanes();
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const pinnedBottom = useRef(true);
 
@@ -332,7 +335,10 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
   }, [client, e2ee]);
 
   return (
-    <main className={`roomview${openThread ? " panel-open" : ""}`} data-testid="roomview">
+    <main
+      className={`roomview${openThread || settingsOpen ? " panel-open" : ""}`}
+      data-testid="roomview"
+    >
       <header className="room-header">
         <div className="title">
           <span className="room-name">{room?.name ?? roomId}</span>
@@ -581,6 +587,7 @@ export function RoomView({ client, roomId, registry, undoGraceMs = 3000 }: RoomV
       {secOpen && (
         <SecuritySheet client={client} adapter={prodAdapter} onClose={() => setSecOpen(false)} />
       )}
+      {(openThread || settingsOpen) && <PaneGutter pane="panel" startDrag={startDrag} label="Resize panel" />}
       {settingsOpen && (
         <RoomSettings client={client} roomId={roomId} onClose={() => setSettingsOpen(false)} />
       )}

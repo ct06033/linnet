@@ -291,6 +291,8 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
   const waiters = new Map<string, Array<() => void>>();
   // W14 item 6: per-user room tags (userId -> roomId -> {tagName: meta}).
   const tagsStore = new Map<string, Map<string, Record<string, unknown>>>();
+  // W14 item 11: userId -> profile content (display_name / avatar_url)
+  const profiles = new Map<string, Record<string, unknown>>();
   const userTags = (uid: string): Map<string, Record<string, unknown>> => {
     let m = tagsStore.get(uid);
     if (!m) {
@@ -717,6 +719,21 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
     // W7: GET /voip/turnServer — static fake creds (WebRTC tests never dial out)
     if (path.endsWith("/voip/turnServer") && method === "GET") {
       return jsonRes({ username: "fake", password: "fake", uris: ["stun:stun.fake.test:3478"], ttl: 86400 });
+    }
+
+    // W14 item 11: GET/PUT /profile/{uid} — minimal profile store
+    const profM = path.match(/\/profile\/([^/]+)(?:\/(avatar_url|display_name))?$/);
+    if (profM && account) {
+      const uid = decodeURIComponent(profM[1]!);
+      if (method === "PUT") {
+        const content = (await bodyJson(init)) as Record<string, unknown>;
+        record("PUT", path, content);
+        const field = profM[2];
+        if (field) profiles.set(uid, { ...(profiles.get(uid) ?? {}), [field]: (content as Record<string, unknown>)[field] });
+        else profiles.set(uid, { ...(profiles.get(uid) ?? {}), ...content });
+        return jsonRes({});
+      }
+      if (method === "GET") return jsonRes(profiles.get(uid) ?? {});
     }
 
     // W14 item 6: GET/PUT/DELETE /user/{uid}/rooms/{roomId}/tags[/{tag}]

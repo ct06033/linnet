@@ -4,8 +4,12 @@ A Matrix chat client that sits **between [Element](https://element.io) and [Cinn
 calmer than Element, more capable than Cinny. Desktop-first for **Windows and Linux**, built as a
 vanilla TypeScript renderer inside an Electron shell.
 
-> v0.1.0 is the first MVP release. It is unsigned (see Honest limits below) and the app icon is a
-> placeholder. Feedback welcome in [Issues](https://github.com/ct06033/linnet/issues).
+> **v0.1.1** is the bug-list + polish wave off real-world v0.1.0 use: first-sync hang fixed,
+> E2EE on by default for new rooms (opt-out in the dialog), display density (compact/medium/
+> relaxed), click-away menus, full space names, unified add button, higher-contrast recovery
+> dialog, own-message highlighting, Linux app-menu icon, sensible minimum window size.
+> Installers are unsigned (see Honest limits below) and the app icon is still a placeholder.
+> Feedback welcome in [Issues](https://github.com/ct06033/linnet/issues).
 
 ## Download
 
@@ -13,9 +17,9 @@ Grab an installer from the [latest release](https://github.com/ct06033/linnet/re
 
 | Platform | File | Install |
 |---|---|---|
-| Windows 10/11 x64 | `Linnet-0.1.0-win-x64.exe` | NSIS installer (per-user, choose folder) |
-| Debian/Ubuntu x64 | `Linnet-0.1.0-linux-x64.deb` | `sudo apt install ./Linnet-0.1.0-linux-x64.deb` |
-| Any Linux x64 | `Linnet-0.1.0-linux-x64.AppImage` | `chmod +x`, run |
+| Windows 10/11 x64 | `Linnet-0.1.1-win-x64.exe` | NSIS installer (per-user, choose folder) |
+| Debian/Ubuntu x64 | `Linnet-0.1.1-linux-x64.deb` | `sudo apt install ./Linnet-0.1.1-linux-x64.deb` |
+| Any Linux x64 | `Linnet-0.1.1-linux-x64.AppImage` | `chmod +x`, run |
 
 ## What's in (MVP)
 
@@ -53,7 +57,7 @@ cross-build fine from Linux x86_64.
 ```sh
 pnpm install
 pnpm -r build          # core → app renderer → desktop main/preload
-pnpm --filter @linnet/app test   # 161 renderer tests + core suites
+pnpm --filter @linnet/app test   # 190 renderer tests + core suites
 cd apps/desktop && npx electron-builder --linux --win --x64
 # artifacts land in apps/desktop/dist/
 ```

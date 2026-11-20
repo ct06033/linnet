@@ -69,6 +69,8 @@ export interface FakeCallRecord {
 }
 
 export interface FakeHomeserverOptions {
+  /** P1 explore: rooms advertised by GET /publicRooms */
+  publicRooms?: { roomId: string; name?: string; topic?: string; members?: number }[];
   accounts: FakeAccount[];
   /** First /sync body per user id; defaults to an empty snapshot. */
   sync?: (userId: string) => unknown;
@@ -408,6 +410,20 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
     // membership (isVersionSupported does not interpolate between versions)
     if (path.endsWith("/versions")) return jsonRes({ versions: ["v1.1", "v1.2", "v1.3", "v1.4", "v1.5", "v1.6", "v1.7", "v1.8", "v1.9", "v1.10", "v1.11"] });
     if (path.endsWith("/capabilities")) return jsonRes({ capabilities: {} });
+
+    // P1 explore/join: the room directory
+    if (path.endsWith("/publicRooms") && method === "GET") {
+      const list = (opts.publicRooms ?? []).map((r) => ({
+        room_id: r.roomId,
+        name: r.name,
+        topic: r.topic,
+        num_joined_members: r.members ?? 1,
+        world_readable: true,
+        guest_can_join: true,
+        aliases: [],
+      }));
+      return jsonRes({ chunk: list, total: list.length });
+    }
 
     // W8 SSO: flow discovery (GET /login) + redirect bounce.
     // The fake "IdP" authenticates whoever the request names via fake_as=

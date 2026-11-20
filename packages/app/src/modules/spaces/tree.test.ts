@@ -28,6 +28,7 @@ function room(roomId: string, over: Partial<RoomSummary> = {}): RoomSummary {
     e2ee: false,
     spaceChildren: [],
     memberCount: 0,
+    lastTs: 0,
     favourite: false,
     ...over,
   };

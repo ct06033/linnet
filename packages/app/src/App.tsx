@@ -6,6 +6,8 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { AccountMetadata, ModuleRegistry, PresenceChoice, RoomSummary, SlashCommandContribution, SyncStatus } from "@linnet/core";
 import { bootRegistry } from "./modules.js";
+import { loadSortMode, saveSortMode, sortRooms, type SortMode } from "./modules/roomlist/sorts.js";
+import { ExplorePanel } from "./modules/roomlist/ExplorePanel.js";
 import { readConfig } from "./bridge.js";
 import { getSessionManager } from "./session-context.js";
 import { Login } from "./screens/Login.js";
@@ -43,7 +45,11 @@ export function App(): ReactNode {
   const [phase, setPhase] = useState<"boot" | "login" | "ready">("boot");
   const [accounts, setAccounts] = useState<AccountMetadata[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [rooms, setRooms] = useState<RoomSummary[]>([]);
+  const [roomsRaw, setRooms] = useState<RoomSummary[]>([]);
+  // P1 sorts: ONE sort of the master list; every section preserves it
+  const [sortMode, setSortMode] = useState<SortMode>(() => loadSortMode());
+  const rooms = useMemo(() => sortRooms(roomsRaw, sortMode), [roomsRaw, sortMode]);
+  const [exploreOpen, setExploreOpen] = useState(false);
   // W12a: first-sync errors must SURFACE instead of hanging on "waiting…"
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   // P1 presence: my own state + status message (persisted per account)
@@ -439,6 +445,30 @@ export function App(): ReactNode {
       <PaneGutter pane="rail" startDrag={startDrag} label="Resize spaces rail" />
 
       <aside className="roomlist" aria-label="Rooms">
+        <div className="roomlist-tools">
+          <select
+            aria-label="Sort rooms"
+            data-testid="sort-mode"
+            value={sortMode}
+            onChange={(e) => {
+              const m = e.target.value as SortMode;
+              setSortMode(m);
+              saveSortMode(m);
+            }}
+          >
+            <option value="recent">Recent activity</option>
+            <option value="az">A–Z</option>
+            <option value="unread">Unread first</option>
+          </select>
+          <button
+            className="explore-open"
+            aria-label="Explore public rooms"
+            data-testid="explore-open"
+            onClick={() => setExploreOpen(true)}
+          >
+            🔎 Explore
+          </button>
+        </div>
         <div className="roomlist-scroll">
         {activeSpaceId === null ? (
           <>
@@ -566,6 +596,13 @@ export function App(): ReactNode {
           </div>
         )}
       </aside>
+      {exploreOpen && clientForView && (
+        <ExplorePanel
+          client={clientForView}
+          known={new Set(rooms.map((r) => r.roomId))}
+          onClose={() => setExploreOpen(false)}
+        />
+      )}
       <PaneGutter pane="roomlist" startDrag={startDrag} label="Resize room list" />
 
       <main className="timeline" id="linnet-main">

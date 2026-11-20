@@ -148,6 +148,8 @@ export function makeSyncSnapshot(opts: {
   invites?: FakeInvite[];
   /** Room ids listed under m.direct for opts.userId (drives the isDM heuristic). */
   direct?: string[];
+  /** P1 presence: fake /sync presence events per user. */
+  presence?: { userId: string; presence: string; statusMsg?: string; currentlyActive?: boolean; lastActiveAgo?: number }[];
   /** W6: extra global account_data events (type -> content). */
   accountData?: Record<string, Record<string, unknown>>;
   nextBatch?: string;
@@ -266,7 +268,18 @@ export function makeSyncSnapshot(opts: {
         ...Object.entries(opts.accountData ?? {}).map(([type, content]) => ev("$root", type, content)),
       ],
     },
-    presence: { events: [] },
+    presence: {
+      events: (opts.presence ?? []).map((p) => ({
+        type: "m.presence",
+        sender: p.userId,
+        content: {
+          presence: p.presence,
+          ...(p.statusMsg ? { status_msg: p.statusMsg } : {}),
+          currently_active: p.currentlyActive ?? p.presence === "online",
+          last_active_ago: p.lastActiveAgo ?? (p.presence === "online" ? 1000 : 3_600_000),
+        },
+      })),
+    },
     to_device: { events: [] },
     device_lists: { changed: {}, left: {} },
     device_one_time_keys_count: {},
@@ -593,6 +606,10 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
     }
 
     // PUT /rooms/{roomId}/typing/{userId}
+    if (/\/presence\/[^/]+\/status$/.test(path) && method === "PUT") {
+      record("PUT", path, await bodyJson(init));
+      return jsonRes({});
+    }
     if (/\/rooms\/[^/]+\/typing\/[^/]+$/.test(path) && method === "PUT") {
       record("PUT", path, await bodyJson(init));
       return jsonRes({});

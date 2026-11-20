@@ -4,7 +4,7 @@
  * (spaces rail is still scaffold — real space graph lands with W3).
  */
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import type { AccountMetadata, ModuleRegistry, RoomSummary, SlashCommandContribution, SyncStatus } from "@linnet/core";
+import type { AccountMetadata, ModuleRegistry, PresenceChoice, RoomSummary, SlashCommandContribution, SyncStatus } from "@linnet/core";
 import { bootRegistry } from "./modules.js";
 import { readConfig } from "./bridge.js";
 import { getSessionManager } from "./session-context.js";
@@ -46,6 +46,16 @@ export function App(): ReactNode {
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
   // W12a: first-sync errors must SURFACE instead of hanging on "waiting…"
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
+  // P1 presence: my own state + status message (persisted per account)
+  const [presencePref, setPresencePref] = useState<{ presence: PresenceChoice; statusMsg?: string } | null>(null);
+  useEffect(() => {
+    if (activeId) void sm?.presenceFor(activeId).then(setPresencePref).catch(() => undefined);
+  }, [activeId, sm]);
+  function choosePresence(presence: PresenceChoice, statusMsg?: string): void {
+    const p = { presence, ...(statusMsg ? { statusMsg } : {}) };
+    setPresencePref(p);
+    if (activeId && sm) void sm.setPresenceFor(activeId, p).catch(() => undefined);
+  }
   const [menuOpen, setMenuOpen] = useState(false);
   // W12 item 8: room-row context menu (leave/decline/remove live ONLY here)
   const [rowMenu, setRowMenu] = useState<{ roomId: string; x: number; y: number } | null>(null);
@@ -305,6 +315,29 @@ export function App(): ReactNode {
                   ✕
                 </button>
               )}
+            </div>
+            {/* P1 presence: state other clients see */}
+            <div className="profile-row" role="group" aria-label="Presence">
+              <span className="lbl">Status</span>
+              <select
+                aria-label="My presence"
+                value={presencePref?.presence ?? "online"}
+                onChange={(e) => choosePresence(e.target.value as PresenceChoice, presencePref?.statusMsg)}
+              >
+                <option value="online">Online</option>
+                <option value="unavailable">Idle</option>
+                <option value="offline">Invisible</option>
+              </select>
+              <input
+                type="text"
+                aria-label="Status message"
+                placeholder="What's up?"
+                defaultValue={presencePref?.statusMsg ?? ""}
+                onBlur={(e) => choosePresence(presencePref?.presence ?? "online", e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                }}
+              />
             </div>
             {accounts.map((a) => (
               <div key={a.accountId} className="menu-row">

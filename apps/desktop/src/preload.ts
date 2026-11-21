@@ -4,12 +4,25 @@
  * once renderer-side module loading lands (wave 2+).
  */
 import { contextBridge, ipcRenderer } from "electron";
-import type { LinnetConfig } from "@linnet/core";
+import type { LinnetConfig, UpdateSnapshot, UpdateState } from "@linnet/core";
 
 const bridge = {
   getConfig: (): Promise<Partial<LinnetConfig>> => ipcRenderer.invoke("linnet:get-config"),
   platform: process.platform,
   version: process.env.LINNET_VERSION ?? "0.0.0",
+  // W18: update flow — main owns the state machine; renderer only renders it.
+  updates: {
+    get: (): Promise<UpdateSnapshot> => ipcRenderer.invoke("linnet:update-get"),
+    check: (): Promise<UpdateState> => ipcRenderer.invoke("linnet:update-check"),
+    download: (): Promise<{ ok: boolean; reason?: string }> => ipcRenderer.invoke("linnet:update-download"),
+    install: (): Promise<{ ok: boolean; reason?: string }> => ipcRenderer.invoke("linnet:update-install"),
+    setEnabled: (on: boolean): Promise<UpdateSnapshot> => ipcRenderer.invoke("linnet:update-set-enabled", on),
+    onEvent: (cb: (snapshot: UpdateSnapshot) => void): (() => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, s: UpdateSnapshot): void => cb(s);
+      ipcRenderer.on("linnet:update", listener);
+      return () => ipcRenderer.removeListener("linnet:update", listener);
+    },
+  },
   kv: {
     get: (key: string): Promise<string | null> => ipcRenderer.invoke("linnet:kv:get", key),
     set: (key: string, value: string): Promise<void> => ipcRenderer.invoke("linnet:kv:set", key, value),

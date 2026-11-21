@@ -32,6 +32,8 @@ import { uploadBytes } from "./modules/media/core.js";
 import type { MatrixClient } from "matrix-js-sdk";
 import { NotificationEngine, makeNotifierPort } from "./modules/notify/engine.js";
 import { CallBanner } from "./modules/call/CallUi.js";
+import { UpdateBanner, updateStatusText } from "./modules/update/UpdateBanner.js";
+import { useUpdates } from "./modules/update/useUpdates.js";
 import { ACCENTS, DENSITIES, loadAppearance, mountAppearance, type Appearance } from "./modules/settings/appearance.js";
 import { useClickAway, useModalA11y } from "./modules/a11y.js";
 
@@ -90,6 +92,8 @@ export function App(): ReactNode {
   const { collapsed, toggle: toggleSection } = useCollapsedSections();
   // W14 item 14: resizable rail/list panels
   const { startDrag } = usePanes();
+  // W18: update state mirror (null on the web build — menu row hides itself)
+  const updates = useUpdates();
   useEffect(() => {
     applyAppearance.current = mountAppearance();
   }, []);
@@ -406,6 +410,26 @@ export function App(): ReactNode {
                 />
               ))}
             </div>
+            {updates && (
+              <div className="appearance-row" role="group" aria-label="Updates">
+                <span className="lbl">Updates</span>
+                <span className="update-status" data-testid="update-status">
+                  {updateStatusText(updates)}
+                </span>
+                <button data-testid="update-check-now" onClick={() => void updates.checkNow()}>
+                  Check now
+                </button>
+                <label className="update-enable">
+                  <input
+                    type="checkbox"
+                    data-testid="update-auto"
+                    checked={updates.enabled}
+                    onChange={(e) => void updates.setEnabled(e.target.checked)}
+                  />
+                  auto-check
+                </label>
+              </div>
+            )}
             </div>
           )}
         </div>
@@ -643,6 +667,7 @@ export function App(): ReactNode {
         )}
       </main>
 
+      <UpdateBanner />
       <CallBanner client={clientForView} />
       {rowMenu &&
         (() => {

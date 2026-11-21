@@ -19,6 +19,15 @@ files:
 
 artifactName: ${productName}-${version}-${os}-${arch}.${ext}
 
+# W18: electron-updater metadata (latest.yml / latest-linux.yml) is generated
+# against this GitHub repo and read back by apps/desktop/src/updater.ts from
+# the packaged app-update.yml. Forks repoint via config.json `updateRepo`
+# (the Tier-1 check) — Tier-2 metadata is baked at build time.
+publish:
+  provider: github
+  owner: ct06033
+  repo: linnet
+
 extraResources:
   - from: ../../packages/app/dist
     to: renderer

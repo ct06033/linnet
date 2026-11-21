@@ -6,6 +6,7 @@
 import { app, BrowserWindow, ipcMain, safeStorage, session, shell } from "electron";
 import fs from "node:fs";
 import path from "node:path";
+import { initUpdater } from "./updater.js";
 
 const DEV_URL = process.env.LINNET_DEV_URL; // e.g. http://localhost:5173
 
@@ -183,6 +184,13 @@ if (!gotLock) {
       cb(permission === "notifications");
     });
     createWindow();
+    // W18: update orchestrator (Tier 1 GitHub check + Tier 2 electron-updater).
+    // Repo overridable via config.json for forks; kv carries the enabled flag.
+    const cfg = loadConfig();
+    initUpdater({
+      store: { read: kvRead, write: kvWrite },
+      ...(typeof cfg.updateRepo === "string" ? { repo: cfg.updateRepo } : {}),
+    });
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
     });

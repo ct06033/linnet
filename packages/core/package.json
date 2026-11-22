@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./update": {
+      "types": "./dist/update.d.ts",
+      "default": "./dist/update.js"
     }
   },
   "scripts": {

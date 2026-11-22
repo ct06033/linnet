@@ -18,9 +18,8 @@ import {
   parseLatestRelease,
   updateCapability,
   type UpdateCapability,
-  type UpdateSnapshot,
-  type UpdateState,
-} from "@linnet/core";
+} from "@linnet/core/update";
+import type { UpdateSnapshot, UpdateState } from "@linnet/core";
 
 /** Mirror of apps/desktop kv storage (main.ts owns the files). */
 export interface UpdaterStore {

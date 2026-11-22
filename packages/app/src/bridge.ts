@@ -36,6 +36,13 @@ declare global {
       openExternal?(url: string): void;
       /** P1 URL previews: main-process HTML fetch (no CORS/cookies in renderer). */
       fetchUrl?(url: string): Promise<{ ok: boolean; status: number; html: string | null } | null>;
+      /** W19 3a: tray/background-notify surface (desktop with a working tray only). */
+      tray?: {
+        autostartGet(): Promise<boolean>;
+        autostartSet(on: boolean): Promise<boolean>;
+        pauseGet(): Promise<boolean>;
+        onPause(cb: (paused: boolean) => void): () => void;
+      };
     };
   }
 }

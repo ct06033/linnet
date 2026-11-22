@@ -28,6 +28,17 @@ const bridge = {
     set: (key: string, value: string): Promise<void> => ipcRenderer.invoke("linnet:kv:set", key, value),
     remove: (key: string): Promise<void> => ipcRenderer.invoke("linnet:kv:remove", key),
   },
+  // W19 3a: tray/background-notify surface (absent = tray unavailable)
+  tray: {
+    autostartGet: (): Promise<boolean> => ipcRenderer.invoke("linnet:tray-autostart:get"),
+    autostartSet: (on: boolean): Promise<boolean> => ipcRenderer.invoke("linnet:tray-autostart:set", on),
+    pauseGet: (): Promise<boolean> => ipcRenderer.invoke("linnet:tray-pause:get"),
+    onPause: (cb: (paused: boolean) => void): (() => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, paused: boolean): void => cb(paused);
+      ipcRenderer.on("linnet:tray-pause", listener);
+      return () => ipcRenderer.removeListener("linnet:tray-pause", listener);
+    },
+  },
   secrets: {
     save: (key: string, value: string): Promise<void> => ipcRenderer.invoke("linnet:secret:save", key, value),
     load: (key: string): Promise<string | null> => ipcRenderer.invoke("linnet:secret:load", key),

@@ -10,6 +10,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dev": "electron .",
     "test": "vitest run",
+    "smoke:asar": "node scripts/asar-resolve-smoke.mjs",
     "dist": "electron-builder --linux --win"
   },
   "dependencies": {

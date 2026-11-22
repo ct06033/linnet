@@ -34,6 +34,8 @@ import { NotificationEngine, makeNotifierPort } from "./modules/notify/engine.js
 import { CallBanner } from "./modules/call/CallUi.js";
 import { UpdateBanner, updateStatusText } from "./modules/update/UpdateBanner.js";
 import { useUpdates } from "./modules/update/useUpdates.js";
+import { useBackground } from "./modules/settings/background.js";
+import { EmailPusherRow } from "./modules/notify/EmailPusherRow.js";
 import { ACCENTS, DENSITIES, loadAppearance, mountAppearance, type Appearance } from "./modules/settings/appearance.js";
 import { useClickAway, useModalA11y } from "./modules/a11y.js";
 
@@ -94,6 +96,12 @@ export function App(): ReactNode {
   const { startDrag } = usePanes();
   // W18: update state mirror (null on the web build — menu row hides itself)
   const updates = useUpdates();
+  // W19 3a: tray pause + autostart (null on web / tray-less desktop)
+  const background = useBackground();
+  const trayPausedRef = useRef(false);
+  useEffect(() => {
+    trayPausedRef.current = background?.paused ?? false;
+  }, [background?.paused]);
   useEffect(() => {
     applyAppearance.current = mountAppearance();
   }, []);
@@ -215,6 +223,7 @@ export function App(): ReactNode {
     if (!clientForView) return;
     const engine = new NotificationEngine(clientForView, makeNotifierPort(), {
       isFocused: (id) => focusedRef.current === id,
+      isPaused: () => trayPausedRef.current, // W19 tray menu pause
     });
     engine.start();
     return () => engine.stop();
@@ -430,6 +439,26 @@ export function App(): ReactNode {
                 </label>
               </div>
             )}
+            {background && (
+              <div className="appearance-row" role="group" aria-label="Background">
+                <span className="lbl">Tray</span>
+                <span className="update-status" data-testid="tray-status">
+                  {background.paused ? "notifications paused" : "running in tray"}
+                </span>
+                {background.autostart !== null && (
+                  <label className="update-enable">
+                    <input
+                      type="checkbox"
+                      data-testid="tray-autostart"
+                      checked={background.autostart}
+                      onChange={(e) => void background.setAutostart(e.target.checked)}
+                    />
+                    start at login
+                  </label>
+                )}
+              </div>
+            )}
+            {clientForView && <EmailPusherRow client={clientForView} />}
             </div>
           )}
         </div>

@@ -120,6 +120,27 @@ describe("NotificationEngine (live)", () => {
     expect(h.seen.length).toBe(0);
   });
 
+  it("tray pause (W19): suppresses while paused, resumes after", async () => {
+    await h.ready;
+    h.engine.stop();
+    let paused = true;
+    const e = new NotificationEngine(
+      h.client,
+      { notify: (n) => h.seen.push(n) },
+      { isFocused: () => false, isPaused: () => paused },
+    );
+    e.start();
+    h.ctl.push(ALICE.userId, "!dev:hs.test", msgEv({ content: { msgtype: "m.text", body: "while paused" } }));
+    await new Promise((r) => setTimeout(r, 150));
+    expect(h.seen.length).toBe(0);
+    paused = false; // tray menu "Resume notifications"
+    h.ctl.push(ALICE.userId, "!dev:hs.test", msgEv({ content: { msgtype: "m.text", body: "after resume" } }));
+    await expect.poll(() => h.seen.length, { timeout: 3000 }).toBe(1);
+    expect(h.seen[0]!.body).toContain("after resume");
+    e.stop();
+    h.engine.start();
+  });
+
   it("handle(): guards — old events, edits, own sender, focus", async () => {
     await h.ready;
     h.engine.start();

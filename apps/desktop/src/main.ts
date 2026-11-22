@@ -7,8 +7,16 @@ import { app, BrowserWindow, ipcMain, safeStorage, session, shell } from "electr
 import fs from "node:fs";
 import path from "node:path";
 import { initUpdater } from "./updater.js";
+import { initTray, type TrayController } from "./tray.js";
+import { startsHidden } from "./trayPolicy.js";
 
 const DEV_URL = process.env.LINNET_DEV_URL; // e.g. http://localhost:5173
+// W19 3a: real-quit bookkeeping (tray hides windows instead of closing them)
+let quitting = false;
+app.on("before-quit", () => {
+  quitting = true;
+});
+let tray: TrayController | null = null;
 
 function resolveConfigPath(): string | undefined {
   const candidates = [
@@ -126,6 +134,11 @@ function createWindow(): void {
     if (/^https?:/i.test(url)) void shell.openExternal(url);
     return { action: "deny" };
   });
+  // W19 3a: close = hide to tray (background notifications stay alive);
+  // real quits (tray menu / app.quit / before-quit) pass through.
+  win.on("close", (e) => {
+    tray?.handleWindowClose(win, e);
+  });
   if (DEV_URL) {
     void win.loadURL(DEV_URL);
   } else {
@@ -138,8 +151,14 @@ if (!gotLock) {
   app.quit();
 } else {
   app.on("second-instance", () => {
+    // W19 3a: launching Linnet again while tray-hidden opens the window.
     const win = BrowserWindow.getAllWindows()[0];
-    if (win) win.focus();
+    if (win) {
+      if (!win.isVisible()) win.show();
+      win.focus();
+    } else {
+      createWindow();
+    }
   });
   ipcMain.handle("linnet:get-config", () => loadConfig());
   ipcMain.handle("linnet:kv:get", (_e, key: string) => kvRead(key));
@@ -184,6 +203,18 @@ if (!gotLock) {
       cb(permission === "notifications");
     });
     createWindow();
+    // W19 3a: tray + background notify. --hidden (set by the autostart entry
+    // / Login Items args) starts in the tray with no window.
+    tray = initTray({
+      platform: process.platform,
+      homeDir: app.getPath("home"),
+      execPath: process.env.APPIMAGE ?? process.execPath,
+      iconPath: path.join(__dirname, "..", "build", "icon.png"),
+      isQuitting: () => quitting,
+    });
+    if (startsHidden(process.argv)) {
+      for (const w of BrowserWindow.getAllWindows()) w.hide();
+    }
     // W18: update orchestrator (Tier 1 GitHub check + Tier 2 electron-updater).
     // Repo overridable via config.json for forks; kv carries the enabled flag.
     const cfg = loadConfig();

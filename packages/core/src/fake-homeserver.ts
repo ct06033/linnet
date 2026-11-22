@@ -94,6 +94,10 @@ export interface FakeHomeserverControls {
   failNextSend(status: number, errcode?: string): void;
   /** Reset recorded call log. */
   resetCalls(): void;
+  /** W19 3a: seed 3PIDs for an account (email-pushers validate against these). */
+  seedThreepids(userId: string, pids: Array<{ medium: string; address: string; verified?: boolean }>): void;
+  /** W19 3a: current pusher records for a user (what /pushers returns). */
+  pushersFor(userId: string): Array<Record<string, unknown>>;
   nextEventId(): string;
 }
 
@@ -351,6 +355,9 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
   let sendFailure: { status: number; errcode: string } | null = null;
 
   const nextEventId = (): string => `$evt${eventSeq++}:hs.test`;
+  // W19 3a: /account/3pid + /pushers state (email digest round-trips)
+  const threepidsByUser = new Map<string, Array<{ medium: string; address: string; verified?: boolean }>>();
+  const pushersByUser = new Map<string, Array<Record<string, unknown>>>();
 
   const wake = (userId: string): void => {
     const list = waiters.get(userId) ?? [];
@@ -835,6 +842,76 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
       if (method === "GET") return jsonRes({ tags: mine.get(rid) ?? {} });
     }
 
+    // W19 3a: GET /pushrules — static Synapse-shaped default set (the
+    // materialise-on-first-fetch behaviour itself is exercised live on HS-A).
+    if (path.match(/\/pushrules\/?$/) && method === "GET") {
+      record("GET", path, null);
+      return jsonRes({
+        global: {
+          override: [
+            { rule_id: ".m.rule.master", enabled: false, conditions: [], actions: ["dont_notify"] },
+            { rule_id: ".m.rule.contains_user_name", conditions: [{ kind: "event_match", key: "content.body", pattern: "alice" }], actions: ["notify", { set_tweak: "highlight" }] },
+          ],
+          underride: [
+            { rule_id: ".m.rule.message", conditions: [], actions: ["notify"] },
+            { rule_id: ".m.rule.invite_to_room", conditions: [], actions: ["notify"] },
+          ],
+          content: [], room: [], sender: [],
+        },
+      });
+    }
+
+    // W19 3a: GET /account/3pid — seeded via ctl.seedThreepids
+    if (path.endsWith("/account/3pid") && method === "GET") {
+      return jsonRes({ threepids: account ? threepidsByUser.get(account.userId) ?? [] : [] });
+    }
+
+    // W19 3a: pusher CRUD, mirroring Synapse's validation: required fields,
+    // and kind=email demands the pushkey be a 3PID email of THIS account
+    // (M_THREEPID_NOT_FOUND otherwise — synapse/push/pusherpool.py).
+    if (path.endsWith("/pushers/set") && method === "POST") {
+      const p = (await bodyJson(init)) as Record<string, unknown>;
+      record("POST", path, p);
+      if (!account) return jsonRes({ errcode: "M_UNKNOWN_TOKEN", error: "no token" }, 401);
+      if (p["kind"] === null) {
+        // spec deletion form used by js-sdk removePusher: {pushkey, app_id, kind:null}
+        const rest = (pushersByUser.get(account.userId) ?? []).filter(
+          (x) => !(x["app_id"] === p["app_id"] && x["pushkey"] === p["pushkey"]),
+        );
+        pushersByUser.set(account.userId, rest);
+        return jsonRes({});
+      }
+      for (const k of ["app_id", "app_display_name", "device_display_name", "pushkey", "kind", "data"]) {
+        if (p[k] === undefined) return jsonRes({ errcode: "M_INVALID_PARAM", error: `Missing parameter: ${k}` }, 400);
+      }
+      if (p["kind"] === "email") {
+        const linked = (threepidsByUser.get(account.userId) ?? []).some(
+          (t) => t.medium === "email" && t.address === p["pushkey"],
+        );
+        if (!linked) return jsonRes({ errcode: "M_THREEPID_NOT_FOUND", error: "Email not found" }, 400);
+      }
+      const list = pushersByUser.get(account.userId) ?? [];
+      const idx = list.findIndex((x) => x["app_id"] === p["app_id"] && x["pushkey"] === p["pushkey"]);
+      if (idx >= 0) list[idx] = { ...p };
+      else list.push({ ...p });
+      pushersByUser.set(account.userId, list);
+      return jsonRes({});
+    }
+    if (path.endsWith("/pushers/delete") && method === "POST") {
+      const b = (await bodyJson(init)) as { app_id?: string; pushkey?: string };
+      record("POST", path, b);
+      if (account) {
+        const list = (pushersByUser.get(account.userId) ?? []).filter(
+          (x) => !(x["app_id"] === b.app_id && x["pushkey"] === b.pushkey),
+        );
+        pushersByUser.set(account.userId, list);
+      }
+      return jsonRes({});
+    }
+    if (path.endsWith("/pushers") && method === "GET") {
+      return jsonRes({ pushers: account ? pushersByUser.get(account.userId) ?? [] : [] });
+    }
+
     // W6: GET/PUT /user/{userId}/account_data/{type} — global settings storage
     const adM = path.match(/\/user\/[^/]+\/account_data\/([^/]+)$/);
     if (adM && account) {
@@ -1030,6 +1107,12 @@ export function createFakeHomeserver(opts: FakeHomeserverOptions): FetchWithCont
         roomId,
         ephemeral: { type: "m.typing", sender: "@server", content: { user_ids: members }, room_id: roomId },
       });
+    },
+    seedThreepids(userId, pids) {
+      threepidsByUser.set(userId, pids.map((t) => ({ medium: t.medium, address: t.address, verified: t.verified ?? true })));
+    },
+    pushersFor(userId) {
+      return (pushersByUser.get(userId) ?? []).map((p) => ({ ...p }));
     },
     failNextSend(status, errcode) {
       sendFailure = { status, errcode: errcode ?? "M_UNKNOWN" };

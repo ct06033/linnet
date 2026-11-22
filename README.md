@@ -4,6 +4,14 @@ A Matrix chat client that sits **between [Element](https://element.io) and [Cinn
 calmer than Element, more capable than Cinny. Desktop-first for **Windows and Linux**, built as a
 vanilla TypeScript renderer inside an Electron shell.
 
+> **v0.2.3** is a reliability release: **every 0.2.2 installer crashed on first
+> launch** (Windows *and* Linux — the packaged main process required an ESM-only module
+> and Node refused it; root cause + a new asar resolution gate in the changelog). It
+> also carries the new **system tray** behavior (close-to-tray, Open/Pause/Quit menu,
+> start-at-login on Windows) and opt-in **unread email digests** (enable per room in
+> settings; Synapse mail must be configured on your server). If you are on 0.2.2 and
+> never got a window — this one is for you.
+
 > **v0.2.0** is the big capability wave: **1:1 video calls and screenshare**, and group
 > calls wired to a self-hosted Element Call + LiveKit stack (widget-based stage; a DNS/cert
 > item gates public dial-in, LAN works today). The room list grew up — **favourites**
@@ -24,9 +32,9 @@ Grab an installer from the [latest release](https://github.com/ct06033/linnet/re
 
 | Platform | File | Install |
 |---|---|---|
-| Windows 10/11 x64 | `Linnet-0.2.0-win-x64.exe` | NSIS installer (per-user, choose folder) |
-| Debian/Ubuntu x64 | `Linnet-0.2.0-linux-x64.deb` | `sudo apt install ./Linnet-0.2.0-linux-x64.deb` |
-| Any Linux x64 | `Linnet-0.2.0-linux-x64.AppImage` | `chmod +x`, run |
+| Windows 10/11 x64 | `Linnet-0.2.3-win-x64.exe` | NSIS installer (per-user, choose folder) |
+| Debian/Ubuntu x64 | `Linnet-0.2.3-linux-amd64.deb` | `sudo apt install ./Linnet-0.2.0-linux-x64.deb` |
+| Any Linux x64 | `Linnet-0.2.3-linux-x86_64.AppImage` | `chmod +x`, run |
 
 ## What's in (MVP)
 

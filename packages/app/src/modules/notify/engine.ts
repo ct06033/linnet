@@ -27,6 +27,8 @@ export interface Notifier {
 export interface EngineHooks {
   /** room the user is currently looking at — suppresses its notifications */
   isFocused(roomId: string): boolean;
+  /** W19 3a: tray "Pause notifications" (session-only) — suppresses all */
+  isPaused?(): boolean;
 }
 
 const HISTORY_AGE_MS = 30_000;
@@ -75,6 +77,7 @@ export class NotificationEngine {
     // from server ts
     const age = Date.now() - ev.getTs();
     if (Number.isFinite(age) && age > HISTORY_AGE_MS) return; // catch-up spam guard
+    if (this.hooks.isPaused?.()) return; // W19 tray pause
     if (this.hooks.isFocused?.(room.roomId)) return;
 
     const me = this.client.getUserId() ?? "";

@@ -1,5 +1,5 @@
 /** Window bridge injected by apps/desktop preload; web build gets fallbacks. */
-import type { LinnetConfig } from "@linnet/core";
+import type { LinnetConfig, UpdateSnapshot, UpdateState } from "@linnet/core";
 
 export interface KvBridge {
   get(key: string): Promise<string | null>;
@@ -13,12 +13,23 @@ export interface SecretBridge {
   remove(key: string): Promise<void>;
 }
 
+/** W18 update surface (see apps/desktop/src/updater.ts). */
+export interface UpdatesBridge {
+  get(): Promise<UpdateSnapshot>;
+  check(): Promise<UpdateState>;
+  download(): Promise<{ ok: boolean; reason?: string }>;
+  install(): Promise<{ ok: boolean; reason?: string }>;
+  setEnabled(on: boolean): Promise<UpdateSnapshot>;
+  onEvent(cb: (snapshot: UpdateSnapshot) => void): () => void;
+}
+
 declare global {
   interface Window {
     linnet?: {
       getConfig(): Promise<Partial<LinnetConfig>>;
       platform: string;
       version: string;
+      updates?: UpdatesBridge;
       kv?: KvBridge;
       secrets?: SecretBridge;
       setBadge?(count: number): Promise<void>;

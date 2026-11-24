@@ -44,6 +44,15 @@ const bridge = {
     load: (key: string): Promise<string | null> => ipcRenderer.invoke("linnet:secret:load", key),
     remove: (key: string): Promise<void> => ipcRenderer.invoke("linnet:secret:remove", key),
   },
+  // W21 item 8: Windows DWM accent (main polls the registry; null = unavailable)
+  systemAccent: {
+    get: (): Promise<string | null> => ipcRenderer.invoke("linnet:system-accent:get"),
+    onChange: (cb: (hex: string | null) => void): (() => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, hex: string | null): void => cb(hex);
+      ipcRenderer.on("linnet:system-accent", listener);
+      return () => ipcRenderer.removeListener("linnet:system-accent", listener);
+    },
+  },
   /** W9: dock/taskbar unread count + open a URL in the OS browser */
   setBadge: (count: number): Promise<void> => ipcRenderer.invoke("linnet:badge", count),
   openExternal: (url: string): void => ipcRenderer.send("linnet:open-external", url),

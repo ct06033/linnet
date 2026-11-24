@@ -650,7 +650,13 @@ function summarize(client: MatrixClient): RoomSummary[] {
     client.getAccountData as unknown as (k: string) => { getContent: () => unknown } | undefined
   )("m.direct");
   const directMap = (directEvent?.getContent() ?? {}) as Record<string, string[]>;
-  const direct = userId ? directMap[userId] ?? [] : [];
+  // W21 item 11: m.direct is keyed by PARTNER id (spec + Element) — the old
+  // map[ownUserId] lookup saw almost nothing, so Element DMs landed under
+  // Rooms. Every room id ANYWHERE in the map is a DM.
+  const directIds = new Set<string>();
+  for (const list of Object.values(directMap)) {
+    if (Array.isArray(list)) for (const rid of list) directIds.add(rid);
+  }
   const out: RoomSummary[] = [];
   for (const room of client.getRooms()) {
     const membership = room.getMyMembership();
@@ -669,7 +675,16 @@ function summarize(client: MatrixClient): RoomSummary[] {
         };
       })
       .filter((c): c is SpaceChildRef => c !== null && c.roomId !== "");
-    const isDM = direct.includes(room.roomId) || Boolean(room.getDMInviter());
+    // W21 item 11: DM = listed in m.direct (any partner key), OR we were
+    // invited in a DM context, OR the create event says is_direct (rooms
+    // created by clients that never maintained m.direct, e.g. bot DMs).
+    const isDM =
+      directIds.has(room.roomId) ||
+      Boolean(room.getDMInviter()) ||
+      Boolean(
+        (room.currentState.getStateEvents(EventType.RoomCreate, "")?.getContent() as { is_direct?: boolean } | undefined)
+          ?.is_direct,
+      );
     // W14 items 5/11: DM partner = the other non-left member; the inviter is
     // the fallback for a not-yet-joined DM (their member list may be stripped).
     let dmUserId: string | undefined;

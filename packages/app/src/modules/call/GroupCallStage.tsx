@@ -39,14 +39,36 @@ export function GroupCallStage({
 
   useEffect(() => {
     if (!widget || !iframeRef.current) return;
+    // W21 item 10: a loaded Element Call starts its widget handshake within
+    // seconds. Silence for 15s = the page never loaded (DNS/TLS/unreachable
+    // service) — say so instead of showing a blank frame forever.
+    const origin = new URL(widget.serviceUrl).origin;
+    let armed: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+      setErr(
+        `Element Call at ${origin} never responded — the call service is unreachable ` +
+          "(DNS, TLS certificate, or it isn't running). Group calls need it reachable from this machine.",
+      );
+    }, 15000);
+    const disarm = (): void => {
+      if (!armed) return;
+      clearTimeout(armed);
+      armed = null;
+    };
     const host = startWidgetHost({
       client,
       roomId,
       widgetId: widget.id,
       iframe: iframeRef.current,
-      origin: new URL(widget.serviceUrl).origin,
+      origin,
+      onActivity: () => {
+        disarm();
+        setErr((e) => (e && e.startsWith("Element Call at") ? null : e));
+      },
     });
-    return () => host.stop();
+    return () => {
+      disarm();
+      host.stop();
+    };
   }, [widget, client, roomId]);
 
   const leave = (): void => {

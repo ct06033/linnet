@@ -133,6 +133,55 @@ describe("W12 item 12 — unified bottom-rail add control", () => {
     await screen.findByTestId("roomview");
   });
 
+  it("W21 item 7: New room dialog can associate the room with a group", async () => {
+    // custom fixture: one plain room + one space, so the group picker has a choice
+    const fetchFn = createFakeHomeserver({
+      accounts: [ALICE],
+      sync: () =>
+        makeSyncSnapshot({
+          userId: ALICE.userId,
+          rooms: [
+            { roomId: "!a1:hs.test", name: "linnet-dev" },
+            { roomId: "!sp1:hs.test", name: "Work", space: true },
+          ],
+        }),
+    });
+    controls = fetchFn.controls;
+    setSessionManagerForTests(new SessionManager({ kv: new MemoryKv(), secrets: new MemorySecrets(), fetchFn }));
+    render(<App />);
+    await signIn();
+    openAddMenu();
+    fireEvent.click(screen.getByRole("menuitem", { name: "New room" }));
+    const dialog = await screen.findByRole("dialog", { name: "Create a new room" });
+    const sel = dialog.querySelector("[data-testid='room-space']") as HTMLSelectElement | null;
+    expect(sel).toBeTruthy();
+    expect(sel!.querySelectorAll("option").length).toBe(2); // No group + Work
+    fireEvent.change(dialog.querySelector("input[aria-label='Room name']") as HTMLInputElement, {
+      target: { value: "Games" },
+    });
+    fireEvent.change(sel!, { target: { value: "!sp1:hs.test" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create room" }));
+    await waitFor(() =>
+      expect(
+        controls.calls.some(
+          (c) =>
+            c.method === "POST" &&
+            c.path.endsWith("/createRoom") &&
+            (c.body as Record<string, unknown>)?.["name"] === "Games",
+        ),
+      ).toBe(true),
+    );
+    // association = m.space.child state written ON THE SPACE (state_key = new room)
+    await waitFor(() => {
+      const put = controls.calls.find(
+        (c) => c.method === "PUT" && decodeURIComponent(c.path).includes("/state/m.space.child/!"),
+      );
+      expect(put).toBeTruthy();
+      expect(decodeURIComponent(put!.path)).toContain("/rooms/!sp1:hs.test/state/m.space.child/");
+      expect(Array.isArray((put!.body as Record<string, unknown>).via)).toBe(true);
+    });
+  });
+
   it("Discover or join room posts /join for the entered address", async () => {
     render(<App />);
     await signIn();

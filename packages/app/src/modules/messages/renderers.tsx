@@ -10,7 +10,7 @@ import { sanitizeHtml } from "./html.js";
 import { ImageBody, VoiceBody, FileBody } from "../media/renderers.js";
 import { YouTubeEmbed, extractYouTubeIds } from "../media/youtube.js";
 import { LinkPreview } from "./previews.js";
-import { stripFallbackQuote } from "./markdown.js";
+import { plainToHtml, stripFallbackQuote } from "./markdown.js";
 import {
   aggregateReactions,
   bodyOf,
@@ -68,7 +68,9 @@ function renderBody(props: TimelineItemProps, ev: MatrixEvent): ReactNode {
           dangerouslySetInnerHTML={{ __html: sanitizeHtml(stripFallbackQuote(formatted)) }}
         />
       ) : (
-        <span className="plain">{body}</span>
+        /* W21 item 12: plain bodies go through escape+linkify (not raw text),
+           so URLs inside are anchors the app opens via the OS browser. */
+        <span className="plain" dangerouslySetInnerHTML={{ __html: plainToHtml(body) }} />
       )}
       {props.edited && <span className="edited-badge" title="edited"> (edited)</span>}
       {ytIds.length > 0 && (

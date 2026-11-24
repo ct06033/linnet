@@ -115,8 +115,11 @@ describe("P1 OG previews", () => {
     setPreviewFetcher(async () => "<html><body>bare</body></html>");
     await signInAndOpenDev();
     pushMsg({ msgtype: "m.text", body: "visit https://plain.ex.test/x" }, "$og2");
-    await screen.findByText("visit https://plain.ex.test/x");
-    await new Promise((r) => setTimeout(r, 50));
+    // W21 item 12: the bare URL is now a real anchor in the plain body…
+    await waitFor(() =>
+      expect(document.querySelector(".plain a[href=\"https://plain.ex.test/x\"]")).toBeTruthy(),
+    );
+    // …while a link with no OG data still mints NO preview card (silent).
     expect(document.querySelector(".link-preview")).toBeNull();
   });
 });

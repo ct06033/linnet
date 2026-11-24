@@ -39,6 +39,10 @@ export interface WidgetHostOptions {
   widgetId: string;
   iframe: HTMLIFrameElement;
   origin: string;
+  /** W21 item 10: fired on ANY genuine widget-side message — proof the
+   *  Element Call page loaded and its transport is alive. The stage uses it
+   *  to disarm its unreachable-service watchdog (no more silent blank frame). */
+  onActivity?: () => void;
 }
 
 /** What we advertise in supported_api_versions. msc4533/3846 intentionally absent — see SCOPE. */
@@ -110,6 +114,7 @@ export function startWidgetHost(opts: WidgetHostOptions): { stop: () => void } {
     }
     if (m.api !== "fromWidget") return;
     if (m.widgetId !== opts.widgetId) return;
+    opts.onActivity?.();
 
     const d = (m.data ?? {}) as Record<string, unknown>;
     switch (m.action) {

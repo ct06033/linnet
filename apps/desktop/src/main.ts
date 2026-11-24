@@ -8,6 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { initUpdater } from "./updater.js";
 import { initTray, type TrayController } from "./tray.js";
+import { getWindowsAccent } from "./systemAccent.js";
 import { startsHidden } from "./trayPolicy.js";
 
 const DEV_URL = process.env.LINNET_DEV_URL; // e.g. http://localhost:5173
@@ -196,11 +197,26 @@ if (!gotLock) {
   ipcMain.on("linnet:open-external", (_e, url: string) => {
     if (/^https?:/i.test(url)) void shell.openExternal(url);
   });
+  // W21 item 8: Windows DWM accent. get() = one read (null off-Windows);
+  // the watcher re-reads every 60s + on window focus and broadcasts deltas.
+  let lastAccent: string | null | undefined;
+  ipcMain.handle("linnet:system-accent:get", () => getWindowsAccent());
+  const pushAccent = (): void => {
+    const next = getWindowsAccent();
+    if (next === lastAccent) return;
+    lastAccent = next;
+    for (const w of BrowserWindow.getAllWindows()) w.webContents.send("linnet:system-accent", next);
+  };
+  setInterval(pushAccent, 60_000);
+  app.on("browser-window-focus", () => pushAccent());
   app.whenReady().then(() => {
-    // W9: renderer Notification API allowed (system notifications, PRD 6.8);
-    // everything else (camera/mic/clipboard…) stays default-deny.
+    // W9: renderer Notification API allowed (system notifications, PRD 6.8).
+    // W21 item 13 root cause: "media" was default-DENY — getUserMedia() for
+    // voice messages (and 1:1 video calls) could never work in packaged
+    // builds, and the renderer error was silent. Mic/camera now allowed;
+    // everything else (clipboard, midi, …) stays default-deny.
     session.defaultSession.setPermissionRequestHandler((_wc, permission, cb) => {
-      cb(permission === "notifications");
+      cb(permission === "notifications" || permission === "media");
     });
     createWindow();
     // W19 3a: tray + background notify. --hidden (set by the autostart entry

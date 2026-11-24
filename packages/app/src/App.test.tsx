@@ -190,11 +190,22 @@ describe("W14 room-list padlocks", () => {
     expect(off.querySelector("[fill='currentColor'], [stroke='currentColor']")).toBeTruthy();
   });
 
-  it("the lock mark precedes the name inside the row button", async () => {
+  it("W21 item 4: row icons form ONE right-justified tail cluster (star → lock → menu dots last)", async () => {
     render(<App />);
     await signIn();
     const name = await screen.findByText("linnet-dev", { selector: ".roomlist .name" });
-    const first = name.parentElement!.firstElementChild!;
-    expect(first.getAttribute("data-testid")).toBe("lock-off");
+    const row = name.closest("button")!;
+    const tail = row.querySelector(".row-tail")!;
+    expect(row.lastElementChild).toBe(tail);
+    expect(tail.getAttribute("data-testid") ?? "").not.toBe("unused");
+    const kids = [...tail.children];
+    const idx = (cls: string) => kids.findIndex((k) => (k.className ?? "").toString().includes(cls));
+    const star = idx("fav-star");
+    const menu = idx("row-menu");
+    expect(star).toBeGreaterThanOrEqual(0);
+    expect(menu).toBe(kids.length - 1);
+    expect(star).toBeLessThan(menu);
+    // encryption mark lives in the cluster now (was the row's leading element)
+    expect(tail.querySelector('[data-testid="lock-off"]')).toBeTruthy();
   });
 });

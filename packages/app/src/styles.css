@@ -692,3 +692,51 @@ button.section-toggle {
 .report-actions button:hover { border-color: var(--accent); }
 .member .member-ignore { margin-left: auto; border: 1px solid var(--border); background: transparent; color: var(--fg-dim); border-radius: 6px; font-size: 11px; padding: 2px 7px; cursor: pointer; }
 .member.ignored { opacity: 0.6; }
+
+/* ═══ W21 (Sean's 13-item batch, 2026-11-24) ═══ */
+
+/* item 5: accent rules — indigo was only :root-default (so re-picking it
+   never changed anything); blue/purple added; system paints inline --accent
+   from the Windows DWM value (bridge), no rule needed. */
+:root[data-accent="indigo"] { --accent: #4f6bed; }
+:root[data-accent="blue"] { --accent: #2563eb; }
+:root[data-accent="purple"] { --accent: #8b5cf6; }
+
+/* item 4: room rows — one right-justified trailing cluster: ★ 👥 🔒 ⋯ */
+.roomlist .row-tail { margin-left: auto; display: flex; align-items: center; gap: 6px; flex: none; }
+
+/* item 9: room names bold ONLY when unread (buttons UA-bold by default) */
+.roomlist .row .name { font-weight: 400; }
+.roomlist .row.unread .name { font-weight: 700; }
+
+/* item 6: menus big enough to read comfortably */
+.account-menu { width: 300px; }
+.account-menu button { font-size: 14px; padding: 8px 10px; }
+.account-menu .lbl { font-size: 13px; }
+.add-menu { min-width: 250px; }
+.add-menu button { font-size: 14.5px; padding: 10px 12px; }
+.room-ctx-menu { min-width: 250px; }
+.room-ctx-menu button { font-size: 14.5px; padding: 9px 12px; }
+
+/* item 11: group People rows (avatar, presence dot, name, DM affordance) */
+.person-row .name { flex: 1; }
+.person-row .person-go { margin-left: auto; color: var(--fg-dim); flex: none; font-size: 13px; }
+.person-row:hover .person-go { color: var(--accent); }
+.roomlist .row.person-row .row-avatar { flex: none; }
+
+/* item 12: links in plain bodies */
+.plain a, .msg-body a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+
+/* item 13: mic button lives inline-left of the composer input */
+.composer .voice-ready { align-self: flex-end; width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--border, #2c313d); background: var(--bg-input, #171b24); color: inherit; font-size: 15px; margin-bottom: 4px; }
+.composer .voice-ready:hover { border-color: var(--accent); }
+.voice-error { font-size: 12px; color: var(--danger, #e0533d); margin-bottom: 4px; }
+
+/* item 2: security gate */
+.gate-dialog { max-width: 460px; text-align: left; }
+.gate-copy { color: var(--fg-dim); line-height: 1.55; font-size: 14px; }
+.gate-field { display: flex; flex-direction: column; gap: 5px; margin: 12px 0; font-size: 13px; color: var(--fg-dim); }
+.gate-field input { padding: 9px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-input); color: var(--fg); font-size: 14px; }
+.gate-actions { display: flex; gap: 10px; margin-top: 14px; }
+.gate-key { width: 100%; font-family: ui-monospace, monospace; font-size: 13px; padding: 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-alt); color: var(--fg); }
+.linkbtn { background: none; border: 0; color: var(--accent); cursor: pointer; padding: 0; font-size: 13px; }

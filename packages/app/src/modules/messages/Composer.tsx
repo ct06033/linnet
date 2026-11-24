@@ -258,6 +258,10 @@ export function Composer(props: ComposerProps): JSX.Element {
 
   const [recording, setRecording] = useState<{ ms: number; peaks: number[] } | null>(null);
   const recorderRef = useRef<VoiceRecorder | null>(null);
+  // W21 item 13: the OLD failure was silent (main denied "media" permission
+  // and the catch threw the state away) — now the reason surfaces in the UI.
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+
 
   async function attach(files: FileList | File[]): Promise<void> {
     const encrypted = isEncryptedRoom(client, roomId);
@@ -287,6 +291,7 @@ export function Composer(props: ComposerProps): JSX.Element {
   }
 
   function startVoice(): void {
+    setVoiceError(null);
     const rec = new VoiceRecorder();
     rec
       .start()
@@ -294,10 +299,19 @@ export function Composer(props: ComposerProps): JSX.Element {
         recorderRef.current = rec;
         setRecording({ ms: 0, peaks: [] });
       })
-      .catch(() => {
+      .catch((err: unknown) => {
         recorderRef.current = null;
         setRecording(null);
+        const name = (err as { name?: string })?.name ?? "";
+        setVoiceError(
+          name === "NotAllowedError"
+            ? "microphone permission denied — allow it in system settings"
+            : name === "NotFoundError"
+              ? "no microphone found on this device"
+              : `microphone unavailable${err ? `: ${String((err as Error)?.message ?? err)}` : ""}`,
+        );
       });
+
   }
 
   async function stopVoice(send: boolean): Promise<void> {
@@ -368,10 +382,12 @@ export function Composer(props: ComposerProps): JSX.Element {
         </div>
       )}
       {uploading && <div className="uploading">uploading {uploading}…</div>}
-      {!recording && VoiceRecorder.supported() && (
-        <button className="voice-ready" aria-label="Start voice message" onClick={startVoice} data-testid="voice-start">
-          🎤
-        </button>
+      {/* W21 item 13: mic lives INSIDE the composer row (left of the input),
+          not on its own line; failures print their reason instead of dying silent */}
+      {voiceError && !recording && (
+        <div className="voice-error" role="alert" data-testid="voice-error">
+          {voiceError}
+        </div>
       )}
       {recording && (
         <div className="voice-recording" data-testid="voice-recording">
@@ -434,6 +450,11 @@ export function Composer(props: ComposerProps): JSX.Element {
         </div>
       ) : (
         <div className="composer-row" style={{ position: "relative" }} ref={composerRowRef}>
+          {!recording && VoiceRecorder.supported() && (
+            <button className="voice-ready" aria-label="Start voice message" onClick={startVoice} data-testid="voice-start">
+              🎤
+            </button>
+          )}
           {mentionOpen && (
             <ul className="mention-menu" role="listbox" aria-label="Mention suggestions" data-testid="mention-menu">
               {mentionOptions.map((m, i) => (

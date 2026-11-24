@@ -46,6 +46,8 @@ export interface FakeRoom {
   old?: FakeEventLike[];
   /** W5b: seed m.room.create with room_type m.space */
   space?: boolean;
+  /** W21 item 11: extra m.room.create content (e.g. is_direct for bot DMs) */
+  createContent?: Record<string, unknown>;
   /** W5b: m.space.child state events keyed by child room id */
   children?: Record<string, { order?: string; via?: string[] }>;
   /** W14 item 11: mxc URI seeded into m.room.avatar state */
@@ -186,7 +188,12 @@ export function makeSyncSnapshot(opts: {
       ev(
         roomId,
         "m.room.create",
-        { creator: opts.userId, room_version: "11", ...(r.space ? { type: "m.space" } : {}) },
+        {
+          creator: opts.userId,
+          room_version: "11",
+          ...(r.space ? { type: "m.space" } : {}),
+          ...(r.createContent ?? {}),
+        },
         { state_key: "" },
       ),
       ev(

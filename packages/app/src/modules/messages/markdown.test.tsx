@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mdToHtml, expandShortcodes, stripFallbackQuote, wrapCodeBlock } from "./markdown.js";
+import { mdToHtml, expandShortcodes, stripFallbackQuote, wrapCodeBlock, plainToHtml } from "./markdown.js";
 
 describe("mdToHtml", () => {
   it("bold/italic/strike/code", () => {
@@ -59,5 +59,28 @@ describe("fallback quotes", () => {
 describe("code block command", () => {
   it("wraps selection", () => {
     expect(wrapCodeBlock("run x here", "x")).toContain("```\nx\n```");
+  });
+});
+
+
+describe("W21 item 12: plainToHtml (received plain bodies get links too)", () => {
+  it("linkifies bare https and www URLs", () => {
+    const h = plainToHtml("see https://ex.test/a?x=1 and www.ex.test/b now");
+    expect(h).toContain('<a href="https://ex.test/a?x=1"');
+    expect(h).toContain('<a href="https://www.ex.test/b"');
+  });
+  it("linkifies [label](url) only for safe schemes", () => {
+    expect(plainToHtml("[ok](https://ex.test)")).toContain('<a href="https://ex.test" target="_blank" rel="noopener">ok</a>');
+    const bad = plainToHtml("[nope](javascript:alert(1))");
+    expect(bad).not.toContain("<a");
+    expect(bad).toContain("[nope]");
+  });
+  it("escapes HTML first — injected markup stays inert", () => {
+    const h = plainToHtml('<img src=x onerror=alert(1)> hi');
+    expect(h).not.toContain("<img");
+    expect(h).toContain("&lt;img");
+  });
+  it("newlines become <br/>", () => {
+    expect(plainToHtml("a\nb")).toBe("a<br/>b");
   });
 });

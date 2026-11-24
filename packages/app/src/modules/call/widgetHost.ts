@@ -74,6 +74,8 @@ interface WireMessage {
   requestId?: string;
   action?: string;
   data?: Record<string, unknown>;
+  response?: unknown;
+  error?: unknown;
 }
 
 export function startWidgetHost(opts: WidgetHostOptions): { stop: () => void } {
@@ -105,6 +107,11 @@ export function startWidgetHost(opts: WidgetHostOptions): { stop: () => void } {
     const m = ev.data as WireMessage | null;
     if (!m || typeof m !== "object" || typeof m.action !== "string") return;
     if (m.api === "toWidget") return; // our own pushes echoed back by the widget as responses
+    // W21 item 10 (prod harness catch #2): a response is the request echoed
+    // with `response`/`error` appended. Loopback setups (and sloppily-routed
+    // real hosts) redeliver it to US — re-answering our own reply is an
+    // infinite synchronous recursion. Only answer REQUESTS.
+    if (m.response !== undefined || m.error !== undefined) return;
     if (!m.api || m.api === "widget_api") {
       // Legacy handshake (pre-fromWidget envelope): both sides use it at start.
       if (m.action === "widget_api_request") {
@@ -119,7 +126,12 @@ export function startWidgetHost(opts: WidgetHostOptions): { stop: () => void } {
     const d = (m.data ?? {}) as Record<string, unknown>;
     switch (m.action) {
       case "supported_api_versions":
-        respond(m, { versions: HOST_API_VERSIONS });
+        // THE item-10 root cause: matrix-widget-api reads r.supported_versions
+        // (WidgetApi.getClientVersions) — returning {versions} left it
+        // undefined, the lib threw `v.includes is not a function` during
+        // Element Call's start(), and the iframe stayed blank forever.
+        // 9/9 unit tests never noticed because they asserted our own shape.
+        respond(m, { supported_versions: HOST_API_VERSIONS });
         return;
 
       case "capabilities":

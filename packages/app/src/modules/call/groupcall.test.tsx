@@ -230,20 +230,33 @@ describe("widgetHost driver", () => {
     host.stop();
   });
 
-  it("supported_api_versions: advertises 2762/2974/4515, NOT msc4533/msc3846", () => {
+  it("supported_api_versions: advertises 2762/2974/4515 under the spec field supported_versions (real WidgetApi reads it)", () => {
     const { el, posted } = fakeIframe();
     const { client } = fakeClient();
     startWidgetHost({ client, roomId: ROOM, widgetId, iframe: el, origin: SERVICE });
     ask({ posted }, "supported_api_versions", {});
-    const ack = replyFor(posted, lastReqId) as { response: { versions: string[] }; };
+    const ack = replyFor(posted, lastReqId) as { response: { supported_versions: string[] } };
     expect(ack.response).toBeTruthy();
-    expect(ack.response.versions).toContain("org.matrix.msc2762");
-    expect(ack.response.versions).toContain("org.matrix.msc2974");
-    expect(ack.response.versions).toContain("org.matrix.msc4515");
-    expect(ack.response.versions).not.toContain("org.matrix.msc4533");
-    expect(ack.response.versions).not.toContain("town.robin.msc3846");
+    expect(ack.response.supported_versions).toContain("org.matrix.msc2762");
+    expect(ack.response.supported_versions).toContain("org.matrix.msc2974");
+    expect(ack.response.supported_versions).toContain("org.matrix.msc4515");
+    expect(ack.response.supported_versions).not.toContain("org.matrix.msc4533");
   });
 
+
+  it("W21 item 10 regression: supported_api_versions response uses the field matrix-widget-api reads", () => {
+    // WidgetApi.getClientVersions(): `cachedClientVersions = r.supported_versions`
+    // then start(): `v.includes(MSC2974)` — a {versions} payload crashes the
+    // widget on boot (blank iframe). Guard the field NAME, not just values.
+    const { el, posted } = fakeIframe();
+    const { client } = fakeClient();
+    const host = startWidgetHost({ client, roomId: ROOM, widgetId, iframe: el, origin: SERVICE });
+    ask({ posted }, "supported_api_versions", {});
+    const ack = replyFor(posted, lastReqId) as { response: Record<string, unknown> };
+    expect(ack.response).toHaveProperty("supported_versions");
+    expect(ack.response).not.toHaveProperty("versions");
+    host.stop();
+  });
   it("MSC2974 grants static + msc2762 patterns, rejects TURN, notifies, backfills m.call.member", () => {
     const members = [fakeMemberEvent("@bob:hs.test", "mem1", { "m.call.member": { member_id: "mem1" } })];
     const { el, posted } = fakeIframe();

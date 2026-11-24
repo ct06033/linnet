@@ -11,9 +11,11 @@ import {
 import {
   ACCENTS,
   applyToElement,
+  getSystemAccent,
   loadAppearance,
   resolveTheme,
   saveAppearance,
+  setSystemAccent,
 } from "./appearance.js";
 import { App } from "../../App.js";
 import { setSessionManagerForTests } from "../../session-context.js";
@@ -44,19 +46,49 @@ describe("appearance pure logic", () => {
     expect(loadAppearance()).toEqual({ mode: "system", accent: "indigo", density: "compact" });
   });
 
-  it("A3 applyToElement sets data-theme/accent/density and accent CSS var", () => {
-    const props: Record<string, string> = {};
+  it("A3 applyToElement: named accents = data-accent rules ONLY; switching is reversible", () => {
+    const props: Record<string, string | undefined> = {};
     const el = {
       dataset: {} as Record<string, string | undefined>,
-      style: { setProperty: (n: string, v: string) => { props[n] = v; } },
+      style: {
+        setProperty: (n: string, v: string) => { props[n] = v; },
+        removeProperty: (n: string) => { props[n] = undefined; },
+      },
     };
     applyToElement(el, { mode: "dark", accent: "teal" }, false);
     expect(el.dataset.theme).toBe("dark");
     expect(el.dataset.accent).toBe("teal");
     expect(el.dataset.density).toBe("compact"); // W12 item 3 default
+    // W21 item 5: teal lives in the CSS rule — the inline channel is RESERVED
+    // for accent="system" only (the old one-way inline froze the last pick)
+    expect(props["--accent"]).toBeUndefined();
+    applyToElement(el, { mode: "dark", accent: "indigo" }, false);
+    expect(el.dataset.accent).toBe("indigo");
     applyToElement(el, { mode: "dark", accent: "teal", density: "relaxed" }, false);
     expect(el.dataset.density).toBe("relaxed");
-    expect(props["--accent"]).toBe(ACCENTS.find((a) => a.id === "teal")!.css);
+    // the new swatches exist and are selectable via data-accent alone
+    for (const id of ["blue", "purple"] as const) {
+      applyToElement(el, { mode: "dark", accent: id }, false);
+      expect(el.dataset.accent).toBe(id);
+    }
+  });
+
+  it("A3b W21 item 8: accent=system paints the bridge's OS hex inline", () => {
+    const props: Record<string, string | undefined> = {};
+    const el = {
+      dataset: {} as Record<string, string | undefined>,
+      style: {
+        setProperty: (n: string, v: string) => { props[n] = v; },
+        removeProperty: (n: string) => { props[n] = undefined; },
+      },
+    };
+    setSystemAccent("#123456");
+    expect(getSystemAccent()).toBe("#123456");
+    applyToElement(el, { mode: "dark", accent: "system" }, false);
+    expect(props["--accent"]).toBe("#123456");
+    setSystemAccent(null); // OS accents disabled -> nothing inline, CSS default
+    applyToElement(el, { mode: "dark", accent: "system" }, false);
+    expect(props["--accent"]).toBeUndefined();
   });
 });
 

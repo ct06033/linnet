@@ -79,10 +79,10 @@ describe("W14 room list", () => {
     expect(teamRow.querySelector("span.avatar")?.textContent).toBe("T");
   });
 
-  it("item 6: starring writes the standard m.favourite tag and moves the room into Favourites on every view", async () => {
+  it("item 6: starring writes the standard m.favourite tag and moves the room into Favorites on every view", async () => {
     render(<App />);
     await signIn();
-    fireEvent.click(await screen.findByRole("button", { name: "Favourite plain" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Favorite plain" }));
     await waitFor(() =>
       expect(
         controls.calls.find((c) => c.method === "PUT" && decodeURIComponent(c.path).includes("/tags/m.favourite")),
@@ -90,17 +90,21 @@ describe("W14 room list", () => {
     );
     const heading = await waitFor(() => {
       const el = document.querySelector('.roomlist h3[data-section="fav"]');
-      if (!el) throw new Error("no Favourites heading yet");
+      if (!el) throw new Error("no Favorites heading yet");
       return el;
     });
-    expect(heading.textContent).toContain("Favourites");
-    // rows in BOTH sections (a favourite AND a room) show the lit star
+    expect(heading.textContent).toContain("Favorites");
+    // rows in BOTH sections (a favorite AND a room) show the lit star
     await waitFor(() => expect(document.querySelectorAll(".fav-star.on").length).toBe(2));
-    // and favourites show on the group view too (item 6: EVERY view)
+    // W21 item 1: the group view NARROWS favorites — "plain" is not a Work
+    // child, so the Favorites section does not appear there at all
     fireEvent.click(screen.getByRole("button", { name: "Space Work" }));
-    await waitFor(() => expect(document.querySelector('.roomlist h3[data-section="fav"]')).toBeTruthy());
-    // unfavourite via the same row star
-    fireEvent.click(screen.getByRole("button", { name: "Unfavourite plain" }));
+    await waitFor(() => expect(document.querySelector('.roomlist h3[data-section="fav"]')).toBeNull());
+    // back to Home, then unfavorite via the star (favorite + room rows both
+    // carry the control — the section one is first)
+    fireEvent.click(screen.getByRole("button", { name: "Home" }));
+    const starBtns = await screen.findAllByRole("button", { name: "Unfavorite plain" });
+    fireEvent.click(starBtns[0]!);
     await waitFor(() =>
       expect(controls.calls.some((c) => c.method === "DELETE" && decodeURIComponent(c.path).includes("/tags/m.favourite"))).toBeTruthy(),
     );
@@ -123,17 +127,47 @@ describe("W14 room list", () => {
     await screen.findByText("Mel", { selector: ".roomlist .name" });
   });
 
-  it("item 5: the group view lists DMs with people who share the space, in its own section", async () => {
+  it("item 5+11: the group view lists its People; clicking one opens/starts the DM", async () => {
     render(<App />);
     await signIn();
-    // Mel is NOT in Home's space section but the DM exists
     fireEvent.click(screen.getByRole("button", { name: "Space Work" }));
     await screen.findByText("team", { selector: ".roomlist .name" });
-    const peopleSection = await screen.findByRole("button", { name: /People/ });
-    expect(peopleSection).toBeTruthy();
-    await screen.findByText("Mel", { selector: ".roomlist .name" });
-    // ...while plain (no shared membership) stays out of the group view
+    await screen.findByRole("button", { name: /People/ });
+    // space + team members appear as people rows
+    const melRow = await screen.findByTestId("person-@mel:hs.test");
+    expect(melRow.querySelector(".name")?.textContent).toBe("mel");
+    expect(await screen.findByTestId("person-@carol:hs.test")).toBeTruthy();
+    // plain (no shared membership) stays out of the group view
     expect(document.querySelector(".roomlist")?.textContent).not.toContain("plain");
+    // Mel has an EXISTING DM → clicking selects it, no new room is created
+    fireEvent.click(melRow);
+    await waitFor(() => expect(document.querySelector(".room-header")?.textContent).toContain("Mel"));
+    expect(controls.calls.some((c) => c.method === "POST" && c.path.includes("/createRoom"))).toBe(false);
+  });
+
+  it("item 11: clicking a person WITHOUT an existing DM creates a direct room", async () => {
+    render(<App />);
+    await signIn();
+    fireEvent.click(screen.getByRole("button", { name: "Space Work" }));
+    const carolRow = await screen.findByTestId("person-@carol:hs.test");
+    fireEvent.click(carolRow);
+    await waitFor(() => {
+      const post = controls.calls.find((c) => c.method === "POST" && decodeURIComponent(c.path).includes("/createRoom"));
+      expect(post).toBeTruthy();
+      // fake HS records the parsed body object, not a JSON string
+      const body = (typeof post!.body === "string" ? JSON.parse(post!.body as string) : post!.body) as Record<string, unknown>;
+      expect(body.is_direct).toBe(true);
+      expect(body.preset).toBe("trusted_private_chat");
+      expect(body.invite).toEqual(["@carol:hs.test"]);
+    });
+    // m.direct account data records the new DM under the PARTNER key
+    await waitFor(() => {
+      expect(
+        controls.calls.some(
+          (c) => c.method === "PUT" && decodeURIComponent(c.path).includes("/account_data/m.direct"),
+        ),
+      ).toBeTruthy();
+    });
   });
 
   it("item 3: the rail Home button is a bordered button-styled block with aria-current", async () => {

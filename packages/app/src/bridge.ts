@@ -32,6 +32,11 @@ declare global {
       updates?: UpdatesBridge;
       kv?: KvBridge;
       secrets?: SecretBridge;
+      /** W21 item 8: OS accent (win32 DWM registry; null = unavailable). */
+      systemAccent?: {
+        get(): Promise<string | null>;
+        onChange(cb: (hex: string | null) => void): () => void;
+      };
       setBadge?(count: number): Promise<void>;
       openExternal?(url: string): void;
       /** P1 URL previews: main-process HTML fetch (no CORS/cookies in renderer). */

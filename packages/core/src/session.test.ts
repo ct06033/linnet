@@ -83,6 +83,36 @@ describe("SessionManager", () => {
     sm.stopAll();
   });
 
+  it("W21 item 11: DM detection honors partner-keyed m.direct + is_direct create", async () => {
+    const fetchFn = createFakeHomeserver({
+      accounts: [ALICE],
+      sync: (userId) =>
+        makeSyncSnapshot({
+          userId,
+          rooms: [
+            { roomId: "!a1:hs.test", name: "linnet-dev" },
+            { roomId: "!dmP:hs.test", name: "Partner Room", members: { "@bob:hs.test": "join" } },
+            { roomId: "!bot:hs.test", name: "Notif Bot", members: { "@bot:hs.test": "join" }, createContent: { is_direct: true } },
+          ],
+          // SPEC shape: m.direct is keyed by the PARTNER id, not by self —
+          // the old map[ownUserId] lookup missed these (Element DMs landed
+          // under Rooms, Sean's W21 item 11).
+          accountData: { "m.direct": { "@bob:hs.test": ["!dmP:hs.test"] } },
+        }),
+    });
+    const sm = new SessionManager({ kv: new MemoryKv(), secrets: new MemorySecrets(), fetchFn });
+    await sm.login({ homeserverUrl: "https://hs.test", username: ALICE.userId, password: ALICE.password });
+    const got = new Map<string, boolean>();
+    sm.onRooms((_id, rooms) => {
+      for (const r of rooms) got.set(r.name, r.isDM);
+    });
+    await until(() => got.has("Notif Bot"));
+    expect(got.get("Partner Room")).toBe(true); // via partner-keyed m.direct
+    expect(got.get("Notif Bot")).toBe(true); // via is_direct on m.room.create
+    expect(got.get("linnet-dev")).toBe(false);
+    sm.stopAll();
+  });
+
   it("W14: summarize carries per-room e2ee from m.room.encryption state", async () => {
     const fetchFn = createFakeHomeserver({
       accounts: [ALICE],

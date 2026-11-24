@@ -66,6 +66,30 @@ export function stripFallbackQuote(html: string): string {
     .replace(/^<blockquote>\s*&gt; ?[\s\S]*?<\/blockquote>\s*/i, "");
 }
 
+/**
+ * W21 item 12: render-side linkification for PLAIN message bodies (received
+ * as m.text without formatted_body — the old path printed them verbatim, so
+ * bare URLs from other clients were never clickable). Escape first, then
+ * [label](url) + bare https?:// → anchors, newlines → <br>. The output only
+ * ever contains <a>/<br> we minted with safe schemes, so it is XSS-safe.
+ */
+export function plainToHtml(src: string): string {
+  let t = escapeHtml(src);
+  // target=_blank keeps the Electron window pinned to Linnet: new-window
+  // requests go through setWindowOpenHandler → shell.openExternal (main.ts).
+  t = t.replace(/\[([^\]\n]+)\]\(([^)\s]+)\)/g, (_m, label: string, url: string) =>
+    /^(https?:|matrix:|mailto:)/i.test(url) ? `<a href="${url}" target="_blank" rel="noopener">${label}</a>` : _m,
+  );
+  t = t.replace(
+    /(^|[\s(])((?:https?:\/\/|www\.)[^\s<)]+)/g,
+    (_m, pre: string, url: string) => {
+      const href = url.startsWith("www.") ? `https://${url}` : url;
+      return `${pre}<a href="${href}" target="_blank" rel="noopener">${url}</a>`;
+    },
+  );
+  return t.replace(/\n/g, "<br/>");
+}
+
 const SHORTCODES: Record<string, string> = {
   tada: "🎉", smile: "😄", grin: "😁", joy: "😂", wink: "😉",
   heart: "❤️", thumbsup: "👍", "+1": "👍", thumbsdown: "👎", "-1": "👎",

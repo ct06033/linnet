@@ -35,13 +35,15 @@ export function DialogOverlay({
 
 interface NameDialogProps {
   onClose: () => void;
-  onSubmit: (name: string, isPublic: boolean, encrypt: boolean) => Promise<void>;
+  onSubmit: (name: string, isPublic: boolean, encrypt: boolean, spaceId: string | null) => Promise<void>;
 }
 
 /** One shape for both create dialogs — same fields, buttons and busy/error
  *  handling, only the labels differ (consistency is the whole point of item 12).
  *  W12 item 7 (carried through the merge from w12-core): the Encrypt (E2EE)
- *  toggle ships CHECKED — opting out is the user action; Public forces it off. */
+ *  toggle ships CHECKED — opting out is the user action; Public forces it off.
+ *  W21 item 7: the room variant can also associate the new room with a group
+ *  (space) at creation time — rendered only when spaceChoices are passed. */
 function NameVisibilityDialog(props: {
   dialogLabel: string;
   heading: string;
@@ -50,12 +52,15 @@ function NameVisibilityDialog(props: {
   encryptLabel: string;
   submitLabel: string;
   busyLabel: string;
+  /** W21 item 7: spaces the new room may join; omit for spaces themselves */
+  spaceChoices?: { roomId: string; name: string }[];
   onClose: () => void;
-  onSubmit: (name: string, isPublic: boolean, encrypt: boolean) => Promise<void>;
+  onSubmit: (name: string, isPublic: boolean, encrypt: boolean, spaceId: string | null) => Promise<void>;
 }): ReactNode {
   const [name, setName] = useState("");
   const [isPublic, setIsPublic] = useState(false);
   const [encrypt, setEncrypt] = useState(true);
+  const [spaceId, setSpaceId] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -64,7 +69,7 @@ function NameVisibilityDialog(props: {
     setBusy(true);
     setError(null);
     try {
-      await props.onSubmit(name.trim(), isPublic, encrypt && !isPublic);
+      await props.onSubmit(name.trim(), isPublic, encrypt && !isPublic, spaceId || null);
       props.onClose();
     } catch (err) {
       setError(String((err as Error)?.message ?? err));
@@ -102,6 +107,25 @@ function NameVisibilityDialog(props: {
         Encrypt (E2EE)
         {isPublic && <span className="hint"> — public rooms cannot be encrypted</span>}
       </label>
+      {props.spaceChoices && props.spaceChoices.length > 0 && (
+        <label>
+          {/* W21 item 7: associate the new room with a group at creation */}
+          Add to group
+          <select
+            aria-label="Add to group"
+            data-testid="room-space"
+            value={spaceId}
+            onChange={(e) => setSpaceId(e.target.value)}
+          >
+            <option value="">No group</option>
+            {props.spaceChoices.map((s) => (
+              <option key={s.roomId} value={s.roomId}>
+                {s.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
       <div className="dialog-actions">
         <button onClick={props.onClose} disabled={busy}>
           Cancel
@@ -130,7 +154,11 @@ export function NewSpaceDialog({ onClose, onSubmit }: NameDialogProps): ReactNod
   );
 }
 
-export function NewRoomDialog({ onClose, onSubmit }: NameDialogProps): ReactNode {
+export function NewRoomDialog({
+  onClose,
+  onSubmit,
+  spaces,
+}: NameDialogProps & { spaces?: { roomId: string; name: string }[] }): ReactNode {
   return (
     <NameVisibilityDialog
       dialogLabel="Create a new room"
@@ -140,6 +168,7 @@ export function NewRoomDialog({ onClose, onSubmit }: NameDialogProps): ReactNode
       encryptLabel="Encrypt room (E2EE)"
       submitLabel="Create room"
       busyLabel="Creating…"
+      spaceChoices={spaces}
       onClose={onClose}
       onSubmit={onSubmit}
     />

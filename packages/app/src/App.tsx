@@ -15,6 +15,8 @@ import { RoomView } from "./modules/messages/RoomView.js";
 import { SpaceRail } from "./modules/spaces/SpaceRail.js";
 import { addRoomToSpace, createRoom, createSpace, leaveAndMaybeForget, removeRoomFromSpace } from "./modules/spaces/actions.js";
 import { LockMark } from "./modules/security/Security.js";
+import { SecurityGate } from "./modules/security/gate.js";
+import { prodAdapter } from "./modules/security/prod.js";
 import { JoinRoomDialog, NewRoomDialog, NewSpaceDialog } from "./modules/dialogs.js";
 import {
   addableRooms,
@@ -27,16 +29,18 @@ import {
 } from "./modules/spaces/tree.js";
 import { SectionHeader, useCollapsedSections } from "./modules/roomlist/sections.js";
 import { Avatar } from "./modules/ui/avatar.js";
+import { PresenceDot } from "./modules/ui/presence.js";
 import { PaneGutter, usePanes } from "./modules/settings/panes.js";
 import { uploadBytes } from "./modules/media/core.js";
 import type { MatrixClient } from "matrix-js-sdk";
+import { Preset } from "matrix-js-sdk";
 import { NotificationEngine, makeNotifierPort } from "./modules/notify/engine.js";
 import { CallBanner } from "./modules/call/CallUi.js";
 import { UpdateBanner, updateStatusText } from "./modules/update/UpdateBanner.js";
 import { useUpdates } from "./modules/update/useUpdates.js";
 import { useBackground } from "./modules/settings/background.js";
 import { EmailPusherRow } from "./modules/notify/EmailPusherRow.js";
-import { ACCENTS, DENSITIES, loadAppearance, mountAppearance, type Appearance } from "./modules/settings/appearance.js";
+import { ACCENTS, DENSITIES, loadAppearance, mountAppearance, setSystemAccent, type Appearance } from "./modules/settings/appearance.js";
 import { useClickAway, useModalA11y } from "./modules/a11y.js";
 
 export function App(): ReactNode {
@@ -77,6 +81,17 @@ export function App(): ReactNode {
   // W8 theming: applied to <html> at boot; live switchable from the account menu
   const [appearance, setAppearance] = useState<Appearance>(() => loadAppearance());
   const applyAppearance = useRef<((a: Appearance) => void) | null>(null);
+  // W21 item 8: Windows system accent color (desktop win32 only). The main
+  // process reads DWM; every pick of the "System" swatch paints --accent live.
+  useEffect(() => {
+    const sa = window.linnet?.systemAccent;
+    if (!sa) return;
+    void sa
+      .get()
+      .then((hex) => setSystemAccent(hex))
+      .catch(() => undefined);
+    return sa.onChange((hex) => setSystemAccent(hex));
+  }, []);
   // W8 a11y: modal focus management refs (palette + add-room dialog)
   const paletteRef = useRef<HTMLDivElement | null>(null);
   const addDialogRef = useRef<HTMLDivElement | null>(null);
@@ -243,12 +258,13 @@ export function App(): ReactNode {
   const homeList = homeRooms(rooms).filter((r) => !r.isDM && !r.invite);
   const entries = activeSpace ? spaceEntries(activeSpace.roomId, rooms) : [];
   const addable = activeSpace ? addableRooms(activeSpace.roomId, rooms) : [];
-  // W14 item 6: favourites show on EVERY view, always at the top
-  const favList = favouriteRooms(rooms);
-  // W14 item 5: a group view also carries the DMs you share with its people
-  const spaceDms = useMemo(() => {
-    if (!clientForView || !activeSpace) return [] as RoomSummary[];
+  // W14 items 5/6 → W21 items 1/11: ONE scope pass per active space drives
+  // favourites filtering (item 1), the group People list (item 11) and the
+  // shared-DM set. Favourited rooms outside the selected group stay hidden.
+  const spaceScope = useMemo(() => {
+    if (!clientForView || !activeSpace) return null;
     const memberIds = new Set<string>();
+    const roomIds = new Set<string>();
     const scope = [activeSpace.roomId];
     for (const e of spaceEntries(activeSpace.roomId, rooms)) {
       if (e.kind === "room") scope.push(e.room.roomId);
@@ -257,12 +273,81 @@ export function App(): ReactNode {
         for (const r of e.rooms) scope.push(r.roomId);
       }
     }
+    const people = new Map<string, { name: string; avatarUrl?: string }>();
+    const me = clientForView.getUserId();
     for (const rid of scope) {
-      for (const m of clientForView.getRoom(rid)?.getJoinedMembers() ?? []) memberIds.add(m.userId);
+      roomIds.add(rid);
+      const room = clientForView.getRoom(rid);
+      if (!room) continue;
+      for (const m of room.getJoinedMembers()) {
+        memberIds.add(m.userId);
+        if (m.userId === me) continue;
+        const c = room.currentState.getStateEvents("m.room.member", m.userId)?.getContent() as
+          { displayname?: string; avatar_url?: string } | undefined;
+        // v45 RoomMember: state-only members have no User object, so .name
+        // is the raw MXID — show displayname ?? localpart (Element parity).
+        const local = m.userId.split(":")[0]!.replace(/^@/, "");
+        const name = c?.displayname || (m.name !== m.userId ? m.name : "") || local;
+        const cur = people.get(m.userId);
+        if (!cur) people.set(m.userId, { name, avatarUrl: c?.avatar_url });
+        else {
+          if (cur.name === m.userId && name !== m.userId) cur.name = name;
+          if (!cur.avatarUrl && c?.avatar_url) cur.avatarUrl = c.avatar_url;
+        }
+      }
     }
-    return dmsWithMembers(rooms, memberIds);
+    return {
+      memberIds,
+      roomIds,
+      people: [...people.entries()].sort((a, b) => a[1].name.localeCompare(b[1].name)),
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clientForView, activeSpace?.roomId, rooms]);
+  // W14 item 5: a group view also carries the DMs you share with its people
+  const spaceDms = useMemo(
+    () => (spaceScope ? dmsWithMembers(rooms, spaceScope.memberIds) : ([] as RoomSummary[])),
+    [rooms, spaceScope],
+  );
+  // W21 item 1: favourites show on EVERY view (top) — but inside a group,
+  // only the favourites that BELONG to it (children/nested + its people's DMs)
+  const favList = useMemo(() => {
+    const all = favouriteRooms(rooms);
+    if (!spaceScope) return all;
+    const dmIds = new Set(spaceDms.map((r) => r.roomId));
+    return all.filter((r) => spaceScope.roomIds.has(r.roomId) || dmIds.has(r.roomId));
+  }, [rooms, spaceScope, spaceDms]);
+  // W21 item 11: People rows open the DM with that person — reuse an existing
+  // DM room, otherwise create one (is_direct + m.direct under the PARTNER id,
+  // the spec shape, so Element-classified DMs also light up here).
+  async function startDM(userId: string): Promise<void> {
+    const client = clientForView;
+    if (!client) return;
+    const existing = rooms.find((r) => r.isDM && r.dmUserId === userId && !r.invite);
+    if (existing) {
+      setSelectedRoom(existing.roomId);
+      return;
+    }
+    try {
+      // W21 item 11: CORRECT js-sdk shape — preset/invite/is_direct are
+      // top-level CreateRoomOpts fields (the {create:{...}} wrapper silently
+      // created a non-direct room with nobody invited).
+      const res = await client.createRoom({
+        preset: Preset.TrustedPrivateChat,
+        invite: [userId],
+        is_direct: true,
+      });
+      const cur = ((client.getAccountData as unknown as (k: string) => { getContent: () => unknown } | undefined)("m.direct")
+        ?.getContent() ?? {}) as Record<string, string[]>;
+      await (client.setAccountData as unknown as (k: string, v: unknown) => Promise<unknown>)("m.direct", {
+        ...cur,
+        [userId]: [...(cur[userId] ?? []), res.room_id],
+      });
+      setSelectedRoom(res.room_id);
+    } catch (err) {
+      console.warn("linnet: DM create failed", err);
+    }
+  }
+
   // W14 item 6: optimistic flip lands via SessionManager.setFavourite's refresh
   function toggleFav(roomId: string, next: boolean): void {
     void sm.setFavourite(roomId, next).catch((err) => console.warn("linnet: favourite failed", err));
@@ -293,7 +378,7 @@ export function App(): ReactNode {
   const favBlock =
     favList.length > 0 ? (
       <>
-        <SectionHeader id="fav" label="Favourites" collapsed={!!collapsed.fav} onToggle={toggleSection} />
+        <SectionHeader id="fav" label="Favorites" collapsed={!!collapsed.fav} onToggle={toggleSection} />
         {!collapsed.fav && favList.map((r) => <Row key={r.roomId} r={r} {...rowProps} />)}
       </>
     ) : null;
@@ -408,11 +493,20 @@ export function App(): ReactNode {
             </div>
             <div className="appearance-row" role="group" aria-label="Accent color">
               <span className="lbl">Accent</span>
-              {ACCENTS.map((a) => (
+              {ACCENTS.filter(
+                // W21 item 8: "System" only makes sense on Windows desktop
+                (a) => a.id !== "system" || window.linnet?.platform === "win32",
+              ).map((a) => (
                 <button
                   key={a.id}
                   className="swatch"
-                  style={{ background: a.css }}
+                  style={{
+                    background:
+                      a.id === "system"
+                        ? "conic-gradient(#2563eb,#8b5cf6,#e0533d,#d98e04,#1f9e8e,#2563eb)"
+                        : a.css,
+                  }}
+                  title={a.id === "system" ? "Follow the Windows accent color" : a.label}
                   aria-label={a.label}
                   aria-pressed={appearance.accent === a.id}
                   onClick={() => switchAppearance({ ...appearance, accent: a.id })}
@@ -614,20 +708,35 @@ export function App(): ReactNode {
                   </div>
                 ),
               )}
-            {/* W14 item 5: DMs with people who share this space */}
-            {spaceDms.length > 0 && (
+            {/* W21 item 11: the group's People — every member, click to DM */}
+            {spaceScope && spaceScope.people.length > 0 && (
               <>
                 <SectionHeader
-                  id={`dms:${activeSpaceId}`}
+                  id={`people:${activeSpaceId}`}
                   label="People"
-                  collapsed={!!collapsed[`dms:${activeSpaceId}`]}
+                  collapsed={!!collapsed[`people:${activeSpaceId}`]}
                   onToggle={toggleSection}
                 />
-                {!collapsed[`dms:${activeSpaceId}`] &&
-                  spaceDms.map((r) => <Row key={r.roomId} r={r} {...rowProps} />)}
+                {!collapsed[`people:${activeSpaceId}`] &&
+                  spaceScope.people.map(([uid, p]) => (
+                    <button
+                      key={uid}
+                      className="row person-row"
+                      data-testid={`person-${uid}`}
+                      title={`Message ${p.name}`}
+                      onClick={() => void startDM(uid)}
+                    >
+                      <Avatar client={clientForView} mxc={p.avatarUrl} name={p.name} size={22} className="row-avatar" />
+                      {clientForView && <PresenceDot client={clientForView} userId={uid} />}
+                      <span className="name">{p.name}</span>
+                      <span className="person-go" aria-hidden="true">
+                        ✉
+                      </span>
+                    </button>
+                  ))}
               </>
             )}
-            {entries.length === 0 && spaceDms.length === 0 && !addOpen && (
+            {entries.length === 0 && (!spaceScope || spaceScope.people.length === 0) && !addOpen && (
               <p className="empty">
                 This space is empty — <button onClick={() => setAddOpen(true)}>add rooms</button>
               </p>
@@ -724,7 +833,7 @@ export function App(): ReactNode {
                     close();
                   }}
                 >
-                  {target.favourite ? "☆ Unfavourite" : "★ Favourite"}
+                  {target.favourite ? "☆ Unfavorite" : "★ Favorite"}
                 </button>
               )}
               {target.invite ? (
@@ -804,9 +913,12 @@ export function App(): ReactNode {
       )}
       {railDialog === "room" && clientForView && (
         <NewRoomDialog
+          spaces={spacesForRail(rooms)}
           onClose={() => setRailDialog(null)}
-          onSubmit={async (name, isPublic, encrypt) => {
+          onSubmit={async (name, isPublic, encrypt, spaceId) => {
             const id = await createRoom(clientForView, { name, isPublic, encrypt });
+            // W21 item 7: optional group association at creation time
+            if (spaceId) await addRoomToSpace(clientForView, spaceId, id);
             setSelectedRoom(id);
           }}
         />
@@ -819,6 +931,9 @@ export function App(): ReactNode {
           }}
         />
       )}
+      {/* W21 item 2: mandatory passphrase gate — blocks until this device
+          can decrypt (setup on first run, unlock on a new device). */}
+      <SecurityGate client={clientForView} adapter={prodAdapter} onSignOut={() => { if (activeId) void signOut(activeId); }} />
     </div>
   );
 }
@@ -844,7 +959,7 @@ function Row({
 }): ReactNode {
   return (
     <button
-      className={`row${selectedRoom === r.roomId ? " selected" : ""}`}
+      className={`row${selectedRoom === r.roomId ? " selected" : ""}${r.unread > 0 ? " unread" : ""}`}
       aria-current={selectedRoom === r.roomId ? "true" : undefined}
       onClick={() => onSelect(r.roomId)}
       onContextMenu={(e) => {
@@ -852,7 +967,6 @@ function Row({
         onOpenMenu(r.roomId, e.clientX, e.clientY);
       }}
     >
-      {!r.isSpace && <LockMark e2ee={r.e2ee} labeled />}
       {/* W14 item 11: real avatars in the list fall back to initials */}
       <Avatar client={client} mxc={r.avatarUrl} name={r.name} size={22} className="row-avatar" />
       <span className="name">{r.name}</span>
@@ -862,57 +976,62 @@ function Row({
           {r.topic}
         </span>
       )}
-      {/* W14 item 4: membership indicator for rooms (DMs are always two) */}
-      {!r.isDM && !r.isSpace && r.memberCount > 0 && (
-        <span className="member-count" title={`${r.memberCount} members`} aria-label={`${r.memberCount} members`}>
-          👥{r.memberCount}
-        </span>
-      )}
-      {r.invite && <span className="invite">invite</span>}
-      {r.unread > 0 && <span className="pill">{r.unread}</span>}
-      {onJoin && (
+      {/* W21 item 4: one right-justified cluster — ★ 👥 🔒 ⋯
+          (item 9: the unread pill lives here too; bold lives on .row.unread) */}
+      <span className="row-tail">
+        {r.invite && <span className="invite">invite</span>}
+        {r.unread > 0 && <span className="pill">{r.unread}</span>}
+        {onJoin && (
+          <span
+            role="button"
+            className="row-join"
+            aria-label={`Join ${r.name}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onJoin();
+            }}
+          >
+            Join
+          </span>
+        )}
         <span
           role="button"
-          className="row-join"
-          aria-label={`Join ${r.name}`}
+          className={`fav-star${r.favourite ? " on" : ""}`}
+          aria-label={`${r.favourite ? "Unfavorite" : "Favorite"} ${r.name}`}
+          aria-pressed={r.favourite}
           onClick={(e) => {
             e.stopPropagation();
-            onJoin();
+            onFavourite(r.roomId, !r.favourite);
           }}
         >
-          Join
+          ★
         </span>
-      )}
-      <span
-        role="button"
-        className={`fav-star${r.favourite ? " on" : ""}`}
-        aria-label={`${r.favourite ? "Unfavourite" : "Favourite"} ${r.name}`}
-        aria-pressed={r.favourite}
-        onClick={(e) => {
-          e.stopPropagation();
-          onFavourite(r.roomId, !r.favourite);
-        }}
-      >
-        ★
-      </span>
-      <span
-        role="button"
-        className="row-menu"
-        aria-label={`Menu for ${r.name}`}
-        aria-haspopup="menu"
-        onClick={(e) => {
-          e.stopPropagation();
-          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-          onOpenMenu(r.roomId, rect.left - 150, rect.bottom + 4);
-        }}
-        onContextMenu={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-          onOpenMenu(r.roomId, rect.left - 150, rect.bottom + 4);
-        }}
-      >
-        ⋯
+        {/* W14 item 4: membership indicator for rooms (DMs are always two) */}
+        {!r.isDM && !r.isSpace && r.memberCount > 0 && (
+          <span className="member-count" title={`${r.memberCount} members`} aria-label={`${r.memberCount} members`}>
+            👥{r.memberCount}
+          </span>
+        )}
+        {!r.isSpace && <LockMark e2ee={r.e2ee} labeled />}
+        <span
+          role="button"
+          className="row-menu"
+          aria-label={`Menu for ${r.name}`}
+          aria-haspopup="menu"
+          onClick={(e) => {
+            e.stopPropagation();
+            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+            onOpenMenu(r.roomId, rect.left - 150, rect.bottom + 4);
+          }}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+            onOpenMenu(r.roomId, rect.left - 150, rect.bottom + 4);
+          }}
+        >
+          ⋯
+        </span>
       </span>
     </button>
   );

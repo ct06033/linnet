@@ -35,6 +35,15 @@ async function register(name) {
     const wait = Math.min(30000, (j.retry_after_ms ?? 3000) + 500);
     await new Promise((res) => setTimeout(res, wait));
   }
+  // W21 live-prod: when registration is closed (production), fall back to
+  // password login for a pre-provisioned probe account.
+  const r2 = await fetch(`${HS}/_matrix/client/v3/login`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ type: "m.login.password", identifier: { user: name }, password: PW }),
+  });
+  const j2 = await r2.json();
+  if (j2.user_id && j2.access_token) return j2;
   throw new Error("register failed");
 }
 
@@ -77,11 +86,25 @@ try {
 
 // 2. compile our host driver (esbuild, matrix-js-sdk stays external)
 execSync("/home/ai/projects/linnet-wt/p1-pin/node_modules/.pnpm/esbuild@0.21.5/node_modules/esbuild/bin/esbuild packages/app/src/modules/call/widgetHost.ts --bundle --format=esm --external:matrix-js-sdk --outfile=packages/app/.tmp-widget-host.mjs", { stdio: "inherit" });
-const { startWidgetHost, HOST_API_VERSIONS } = await import("/home/ai/projects/linnet-wt/p1-pin/packages/app/.tmp-widget-host.mjs");
+const { startWidgetHost, HOST_API_VERSIONS } = await import(new URL("packages/app/.tmp-widget-host.mjs", `file://${process.cwd()}/`).href);
 
 // 3. real user + room on HS-A
 const slug = `linnet_w2b_${Date.now().toString(36)}`;
-const reg = await register(slug);
+// W21 live-prod run: LINNET_PROBE_USER/PW target a pre-provisioned account
+// on a homeserver whose registration is closed (production).
+async function probeLogin(user, pw) {
+  const r = await fetch(`${HS}/_matrix/client/v3/login`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ type: "m.login.password", identifier: { type: "m.id.user", user }, password: pw }),
+  });
+  const j = await r.json();
+  if (!j.user_id || !j.access_token) throw new Error(`probe login failed: ${JSON.stringify(j).slice(0, 160)}`);
+  return j;
+}
+const reg = process.env.LINNET_PROBE_USER
+  ? await probeLogin(process.env.LINNET_PROBE_USER, process.env.LINNET_PROBE_PW ?? "")
+  : await register(slug);
 console.log("registered", reg.user_id, "device", reg.device_id);
 const client = createClientSession({
   homeserverUrl: HS,

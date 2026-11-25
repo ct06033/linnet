@@ -95,7 +95,18 @@ export function SecurityGate(props: GateProps): JSX.Element | null {
       setPass2("");
       setMode("showKey");
     } catch (err) {
-      setMessage(`Setup failed: ${(err as Error).message || err}`);
+      const m = (err as Error).message || String(err);
+      // 11-24 (Sean prod): when the account ALREADY has keys (Element set them
+      // up first), setup is a dead end — route straight to the unlock screen
+      // with a visible explanation instead of a generic error.
+      if (/already has/i.test(m)) {
+        setStatus((s) => (s ? { ...s, ssssReady: true } : s));
+        setMessage("Your account already has encryption keys from another app (e.g. Element). Enter the passphrase or recovery key you use THERE to unlock this device — or set a new passphrase from inside that app first.");
+        setRoute("passphrase");
+        setMode("unlock");
+        return;
+      }
+      setMessage(`Setup failed: ${m}`);
       setMode("error");
     }
   }
@@ -151,22 +162,36 @@ export function SecurityGate(props: GateProps): JSX.Element | null {
         {mode === "unlock" && (
           <>
             <h3>Unlock your encrypted history</h3>
+            {message && (
+              <p className="gate-copy" role="status" data-testid="gate-hint">{message}</p>
+            )}
             <p className="gate-copy">
               Your messages are protected by your security passphrase. Enter it to decrypt your conversations on this
               device — history that used to show “unable to decrypt” will open immediately.
             </p>
             <label className="gate-field">
               {route === "passphrase" ? "Security passphrase" : "Recovery key"}
-              <input type="password" value={secret} onChange={(e) => setSecret(e.target.value)} />
+              <input
+                type={route === "passphrase" ? "password" : "text"}
+                value={secret}
+                onChange={(e) => setSecret(e.target.value)}
+                autoComplete="off"
+                spellCheck={false}
+              />
             </label>
-            <button className="linkbtn" onClick={() => setRoute(route === "passphrase" ? "key" : "passphrase")}>
+            {route === "key" && (
+              <p className="gate-copy">
+                Groups of 4 characters starting with E, copied from Element: Settings → Security &amp; Privacy → Recovery Key.
+              </p>
+            )}
+            <button className="linkbtn" onClick={() => { setMessage(""); setRoute(route === "passphrase" ? "key" : "passphrase"); }}>
               {route === "passphrase" ? "Use a recovery key instead" : "Use the passphrase instead"}
             </button>
             <div className="gate-actions">
               <button className="primary" onClick={() => void doUnlock()} disabled={!secret}>
                 Unlock my history
               </button>
-              <button onClick={() => setMode("setup")}>Set a new passphrase…</button>
+              <button onClick={() => { setMessage(""); setMode("setup"); }}>Set a new passphrase…</button>
             </div>
           </>
         )}

@@ -99,15 +99,27 @@ export async function bootstrapSecurity(opts: {
     );
   }
 
-  await crypto.bootstrapCrossSigning({
-    authUploadDeviceSigningKeys: async (makeRequest) => {
-      await makeRequest({
-        type: "m.login.password",
-        identifier: { type: "m.id.user", user: userId },
-        password,
-      } as never);
-    },
-  });
+  try {
+    await crypto.bootstrapCrossSigning({
+      authUploadDeviceSigningKeys: async (makeRequest) => {
+        await makeRequest({
+          type: "m.login.password",
+          identifier: { type: "m.id.user", user: userId },
+          password,
+        } as never);
+      },
+    });
+  } catch (err) {
+    // 11-24 (Sean prod): accounts created/verified in older Element can carry
+    // cross-signing keys WITHOUT 4S — the setup screen then dead-ends with an
+    // opaque SDK error. Route the user to what actually works. Wrong-password
+    // rejections keep their honest message.
+    const m = String((err as Error)?.message ?? err);
+    if (/password|forbidden|403|uia|flow/i.test(m)) throw err;
+    throw new Error(
+      `This account already has encryption keys from another app, so a brand-new passphrase can't be created here. ${m}`,
+    );
+  }
 
   const generated = await crypto.createRecoveryKeyFromPassphrase(passphrase);
   rememberBootstrapKey(client, generated.privateKey);
@@ -291,7 +303,20 @@ export async function unlockWithSecret(opts: {
   if ("passphrase" in secret && typeof secret.passphrase === "string") {
     key = (await deriveSsssKeyFromPassphrase(client, secret.passphrase)).key;
   } else if ("recoveryKey" in secret && typeof secret.recoveryKey === "string") {
-    key = decodeRecoveryKey(secret.recoveryKey) as Uint8Array<ArrayBuffer>;
+    // Sean prod report (11-24): keys re-typed/copied from Element arrive with
+    // stray whitespace or the occasional typo, and the SDK's raw
+    // "Incorrect parity" surfaced verbatim — normalize first, then turn
+    // format failures into actionable copy.
+    const cleaned = secret.recoveryKey.replace(/\s+/g, "");
+    try {
+      key = decodeRecoveryKey(cleaned) as Uint8Array<ArrayBuffer>;
+    } catch (err) {
+      const m = String((err as Error)?.message ?? err);
+      if (/non-base58|invalid character|base58/i.test(m)) {
+        throw new Error("That doesn't look like a recovery key. The format is groups of 4 characters starting with E (no 0, O, I or l). If you copied an OLD Element backup key (one long word starting with a lowercase letter), use your security passphrase instead.");
+      }
+      throw new Error("That recovery key failed its checksum — re-copy it from Element (Settings → Security & Privacy → Recovery Key) without typos or extra characters.");
+    }
   } else {
     throw new Error("unlock: provide a passphrase or a recovery key");
   }

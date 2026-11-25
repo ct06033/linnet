@@ -158,3 +158,41 @@ describe("W21 item 2 security gate", () => {
     await waitFor(() => expect(container.firstChild).toBeNull());
   });
 });
+
+describe("W21-HOTFIX gate routing after Sean's prod report (11-24)", () => {
+  const status = { cryptoAvailable: true, ready: false, ssssReady: false, crossSigningReady: false, backupEnabled: false, backupCount: 0 };
+  it("a setup attempt on an account that already has keys auto-routes to the unlock screen with guidance", async () => {
+    const adapter = {
+      status: async () => status,
+      bootstrap: async () => {
+        throw new Error("This account already has encryption keys from another app, so a brand-new passphrase can't be created here. Cannot reset cross-signing keys");
+      },
+      unlock: async () => 0,
+      restorePassphrase: async () => 0,
+    } as unknown as SecurityAdapter;
+    render(<SecurityGate client={anyClient} adapter={adapter} onSignOut={() => undefined} />);
+    await screen.findByText("Set your security passphrase");
+    const fields = document.querySelectorAll<HTMLButtonElement>(".gate-dialog input");
+    fireEvent.change(fields[0], { target: { value: "acct-password" } });
+    fireEvent.change(fields[1], { target: { value: "brand-new-pass" } });
+    fireEvent.change(fields[2], { target: { value: "brand-new-pass" } });
+    fireEvent.click(screen.getByText("Protect my messages"));
+    await screen.findByText("Unlock your encrypted history");
+    expect(screen.getByTestId("gate-hint").textContent).toMatch(/already has encryption keys/);
+  });
+
+  it("recovery-key route renders a visible (unmasked) input plus format guidance", async () => {
+    const adapter = {
+      status: async () => ({ ...status, ssssReady: true }),
+      bootstrap: async () => "x",
+      unlock: async () => 0,
+      restorePassphrase: async () => 0,
+    } as unknown as SecurityAdapter;
+    render(<SecurityGate client={anyClient} adapter={adapter} onSignOut={() => undefined} />);
+    await screen.findByText("Unlock your encrypted history");
+    fireEvent.click(screen.getByText("Use a recovery key instead"));
+    const inp = document.querySelector<HTMLInputElement>(".gate-dialog input");
+    expect(inp?.type).toBe("text");
+    expect(document.querySelector(".gate-dialog")?.textContent).toMatch(/Groups of 4 characters/);
+  });
+});

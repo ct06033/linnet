@@ -245,3 +245,61 @@ describe("W14 unlockWithSecret", () => {
     expect(getUnlockedSsssKey(b)).toBeUndefined();
   });
 });
+
+describe("W21-HOTFIX recovery-key input hardening (Sean prod report 11-24)", () => {
+  const mkCalls = (): CryptoCalls => ({ bootstrapCrossSigning: 0, checkKeyBackupAndEnable: 0, restoreKeyBackup: 0, keysQuery: 0 });
+
+  it("normalizes whitespace around a structurally valid key (reaches the auth check, not a decode error)", async () => {
+    const raw = encodeRecoveryKey(new Uint8Array(32).fill(7));
+    const client = mkClient(mkStore(), mkCrypto({ calls: mkCalls() }));
+    await expect(
+      unlockWithSecret({ client, secret: { recoveryKey: `\n ${raw.replace(/ /g, " ")} \t` } as UnlockSecret }),
+    ).rejects.toThrow(/wrong passphrase or recovery key|nothing to unlock/);
+  });
+
+  it("maps a bad-checksum key to actionable copy (was: raw 'Incorrect parity')", async () => {
+    const client = mkClient(mkStore(), mkCrypto({ calls: mkCalls() }));
+    await expect(
+      unlockWithSecret({ client, secret: { recoveryKey: "EoJp EoJp EoJp EoJp EoJp EoJp EoJp EoJp EoJp EoJp EoJp EoJp Eo" } as UnlockSecret }),
+    ).rejects.toThrow(/failed its checksum/);
+  });
+
+  it("maps a legacy/base64-shaped key (non-base58 chars) to the passphrase hint", async () => {
+    const client = mkClient(mkStore(), mkCrypto({ calls: mkCalls() }));
+    await expect(
+      unlockWithSecret({ client, secret: { recoveryKey: "eH6abc0OIl+//==".trim() } as UnlockSecret }),
+    ).rejects.toThrow(/doesn't look like a recovery key/);
+  });
+
+  it("bootstrapSecurity keeps honest messages for wrong-password UIA rejections", async () => {
+    const store = mkStore();
+    store.delete("m.secret_storage.default_key");
+    store.delete(`m.secret_storage.key.${KEY_ID}`);
+    const crypto = {
+      ...mkCrypto({ calls: mkCalls(), ssssReady: false }),
+      bootstrapCrossSigning: async () => {
+        throw new Error("Invalid password");
+      },
+    };
+    const client = mkClient(store, crypto as unknown as MatrixClient);
+    await expect(
+      bootstrapSecurity({ client, userId: "@a:t", password: "x", passphrase: "long enough" }),
+    ).rejects.toThrow(/Invalid password/);
+  });
+
+  it("bootstrapSecurity reframes opaque already-has-keys failures with routing advice", async () => {
+    const store = mkStore();
+    store.delete("m.secret_storage.default_key");
+    store.delete(`m.secret_storage.key.${KEY_ID}`);
+    const crypto = {
+      ...mkCrypto({ calls: mkCalls(), ssssReady: false }),
+      bootstrapCrossSigning: async () => {
+        throw new Error("Cannot reset cross-signing keys: this session does not have the private keys");
+      },
+    };
+    const client = mkClient(store, crypto as unknown as MatrixClient);
+    await expect(
+      bootstrapSecurity({ client, userId: "@a:t", password: "x", passphrase: "long enough" }),
+    ).rejects.toThrow(/already has encryption keys from another app/);
+  });
+});

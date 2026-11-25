@@ -32,6 +32,7 @@ import {
   unlockInitial, unlockReduce, type UnlockStep,
   probeStatus, type SecurityStatus, autoPassphrase,
 } from "./state.js";
+import { mapSecretStorageError } from "./gate.js";
 
 export interface SecurityAdapter {
   bootstrap(opts: { client: MatrixClient; userId: string; password: string; passphrase: string }): Promise<string>;
@@ -286,7 +287,7 @@ function SetupWizard(props: { client: MatrixClient; adapter: SecurityAdapter; on
       .then((recoveryKey) => !dead && dispatch({ t: "success", recoveryKey }))
       .catch((e) => {
         lastRun.current = null; // allow retry to re-run with same params
-        if (!dead) dispatch({ t: "fail", message: (e as Error).message });
+        if (!dead) dispatch({ t: "fail", message: mapSecretStorageError((e as Error).message) });
       });
     return () => {
       dead = true;
@@ -414,7 +415,7 @@ function RecoverFlow(props: { client: MatrixClient; adapter: SecurityAdapter; on
       dispatchSt({ t: "done", imported: n });
     } catch (e) {
       lastRestore.current = null;
-      dispatchSt({ t: "fail", message: (e as Error).message });
+      dispatchSt({ t: "fail", message: mapSecretStorageError((e as Error).message) });
     }
   }
 
@@ -511,7 +512,7 @@ function UnlockFlow(props: { client: MatrixClient; adapter: SecurityAdapter; onD
       dispatchSt({ t: "done", imported: n });
     } catch (e) {
       lastRun.current = null; // allow retry to re-run with the same params
-      dispatchSt({ t: "fail", message: (e as Error).message });
+      dispatchSt({ t: "fail", message: mapSecretStorageError((e as Error).message) });
     }
   }
 

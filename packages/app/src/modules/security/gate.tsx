@@ -21,6 +21,19 @@ import type { SecurityStatus } from "./state.js";
 
 type Mode = "probing" | "none" | "setup" | "unlock" | "working" | "showKey" | "error";
 
+/**
+ * W22 (Sean prod): the gate/security center must NEVER surface raw SDK crypto
+ * error strings ("Error decrypting secret m.megolm_backup.v1: bad MAC" leaked
+ * verbatim in 0.2.4). Map decryption failures to actionable copy; everything
+ * else (login-password/UIA honesty etc.) passes through untouched.
+ */
+export function mapSecretStorageError(message: string): string {
+  if (/bad MAC|could not decrypt/i.test(message)) {
+    return "That key doesn't match any copy of your secrets on this account. Try the other option (passphrase ↔ recovery key), or your login password if that's what you set as your security passphrase.";
+  }
+  return message;
+}
+
 export interface GateProps {
   client: MatrixClient | null;
   adapter: SecurityAdapter;
@@ -106,7 +119,7 @@ export function SecurityGate(props: GateProps): JSX.Element | null {
         setMode("unlock");
         return;
       }
-      setMessage(`Setup failed: ${m}`);
+      setMessage(`Setup failed: ${mapSecretStorageError(m)}`);
       setMode("error");
     }
   }
@@ -127,7 +140,7 @@ export function SecurityGate(props: GateProps): JSX.Element | null {
       setSecret("");
       await probe(); // -> ready -> gate closes
     } catch (err) {
-      setMessage(`Unlock failed: ${(err as Error).message || err}. You can retry or sign out.`);
+      setMessage(`Unlock failed: ${mapSecretStorageError((err as Error).message || String(err))}. You can retry or sign out.`);
       setMode("error");
     }
   }

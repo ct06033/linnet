@@ -1,7 +1,8 @@
 import type { MatrixClient } from "matrix-js-sdk";
 import { decodeRecoveryKey, encodeRecoveryKey } from "matrix-js-sdk/lib/crypto-api/recovery-key.js";
 import { keyFromAuthData } from "matrix-js-sdk/lib/common-crypto/key-passphrase.js";
-import { ServerSideSecretStorageImpl } from "matrix-js-sdk/lib/secret-storage.js";
+import decryptAESSecretStorageItem from "matrix-js-sdk/lib/utils/decryptAESSecretStorageItem.js";
+import { SECRET_STORAGE_ALGORITHM_V1_AES } from "matrix-js-sdk/lib/secret-storage.js";
 
 /**
  * Per-client holder for the SSSS private key created mid-bootstrap. js-sdk's
@@ -34,12 +35,28 @@ export function getUnlockedSsssKey(client: MatrixClient): Uint8Array<ArrayBuffer
   return unlockedSsssKeys.get(client);
 }
 
+/** Server-side read seam — account data can be missing from the LOCAL cache on
+ *  a fresh session (sync hasn't delivered it yet), which made the W21 hotfix
+ *  reads flaky. W22: always fetch FROM THE SERVER first; fall back to the
+ *  local cache only when the server read is unavailable (offline) or empty. */
+async function readAccountData(client: MatrixClient, type: string): Promise<Record<string, unknown> | null> {
+  const fn = client.getAccountDataFromServer as unknown as (t: string) => Promise<Record<string, unknown> | null>;
+  try {
+    const server = await fn.call(client, type);
+    if (server) return server;
+  } catch {
+    // server unreachable — try the local cache below (honest degraded read)
+  }
+  const local = (
+    client.getAccountData as unknown as ((k: string) => { getContent: () => unknown } | undefined) | undefined
+  )?.(type)?.getContent?.();
+  return (local as Record<string, unknown> | undefined) ?? null;
+}
+
 /** The account's default SSSS key id (m.secret_storage.default_key -> content.key). */
-export function defaultSsssKeyId(client: MatrixClient): string | null {
-  const acct = (
-    client.getAccountData as unknown as (k: string) => { getContent: () => unknown } | undefined
-  )("m.secret_storage.default_key")?.getContent() as { key?: string } | undefined;
-  return acct?.key ?? null;
+export async function defaultSsssKeyId(client: MatrixClient): Promise<string | null> {
+  const acct = await readAccountData(client, "m.secret_storage.default_key");
+  return (acct?.key as string | undefined) ?? null;
 }
 
 /**
@@ -48,11 +65,79 @@ export function defaultSsssKeyId(client: MatrixClient): string | null {
  * advertised id. Single-SSSS-key product assumption (same as sdk.ts — re-key
  * flows land later); returning a keyId NOT in `keys` would make js-sdk throw
  * "App returned unknown key from getSecretStorageKey!".
+ *
+ * W22 NOTE: this only serves the CLIENT-LEVEL cryptoCallbacks.getSecretStorageKey
+ * (sdk.ts), where the SDK-internal fetches during bootstrapCrossSigning are
+ * inherently single-shot — ServerSideSecretStorageImpl.get() asks the callback
+ * ONCE and decrypts ONLY secretInfo.encrypted[keyId] for the returned keyId
+ * (secret-storage.js:303, no excludes/retry anywhere). Our own unlock/restore
+ * paths therefore bypass sss.get entirely in favour of decryptSecretWithKey,
+ * which tries EVERY copy; do NOT try to make the SDK internals retry.
  */
-export function pickSsssKeyId(client: MatrixClient, keys: Record<string, unknown>): string | undefined {
-  const def = defaultSsssKeyId(client);
+export async function pickSsssKeyId(
+  client: MatrixClient,
+  keys: Record<string, unknown>,
+): Promise<string | undefined> {
+  const def = await defaultSsssKeyId(client);
   if (def && keys && Object.prototype.hasOwnProperty.call(keys, def)) return def;
   return Object.keys(keys ?? {})[0];
+}
+
+/** Strip ALL whitespace from a user-typed recovery key (copy/paste line wraps,
+ *  mobile keyboards). Applied at EVERY core entry point that decodes a key
+ *  (W22: the b28e991 hotfix covered only unlockWithSecret). */
+export function cleanRecoveryKey(s: string): string {
+  return s.replace(/\s+/g, "");
+}
+
+
+/**
+ * W22 THE FIX — decrypt `name` from 4S with the given key bytes, trying EVERY
+ * key entry the secret is encrypted under, not just one.
+ *
+ * Real accounts (Element, multi-rotation histories) carry secrets whose
+ * `encrypted` map holds STALE entries: {A(old key), B(default key)}. A user who
+ * supplies A's key bytes hits the SDK single-shot failure: get() asks the app
+ * callback once, pickSsssKeyId answers B (default wins), B's entry is decrypted
+ * with A's bytes and throws "bad MAC" even though entry A would succeed.
+ *
+ * Strategy: read the secret's `encrypted` map FROM THE SERVER, order candidate
+ * key ids (default key first when present, then the rest), skip entries we
+ * cannot handle (unknown algorithm, missing iv/ciphertext/mac) — they are not
+ * fatal — and try each with the SDK's OWN AES-HMAC routine
+ * (decryptAESSecretStorageItem, the exact code ServerSideSecretStorageImpl
+ * wraps). First success wins; all-fail returns null. NEVER mutates account
+ * data or SDK state.
+ */
+export async function decryptSecretWithKey(
+  client: MatrixClient,
+  name: string,
+  keyBytes: Uint8Array<ArrayBuffer>,
+): Promise<string | null> {
+  const secretInfo = await readAccountData(client, name);
+  const map = secretInfo?.encrypted as
+    | Record<string, { iv?: string; ciphertext?: string; mac?: string }>
+    | undefined;
+  if (!map) return null;
+  const def = await defaultSsssKeyId(client);
+  const ids = Object.keys(map);
+  const ordered = def && map[def] ? [def, ...ids.filter((id) => id !== def)] : ids;
+  for (const keyId of ordered) {
+    const encInfo = map[keyId];
+    if (!encInfo?.iv || !encInfo.ciphertext || !encInfo.mac) continue; // malformed entry — skip
+    const desc = await readAccountData(client, `m.secret_storage.key.${keyId}`);
+    if (desc?.algorithm !== SECRET_STORAGE_ALGORITHM_V1_AES) continue; // unsupported algorithm — skip
+    try {
+      return await decryptAESSecretStorageItem(
+        encInfo as { iv: string; ciphertext: string; mac: string },
+        keyBytes,
+        name,
+      );
+    } catch {
+      // bad MAC (or AES failure) for THIS copy — the next entry may match
+    }
+  }
+  return null;
 }
 
 
@@ -168,13 +253,14 @@ async function deriveSsssKeyFromPassphrase(
   client: MatrixClient,
   passphrase: string,
 ): Promise<{ keyId: string; key: Uint8Array<ArrayBuffer> }> {
-  const acct = (t: string) =>
-    (client.getAccountData as unknown as (k: string) => { getContent: () => unknown } | undefined)(t)?.getContent();
-  const defaultKeyId = (acct("m.secret_storage.default_key") as { key?: string } | undefined)?.key;
+  // W22: read the key description FROM THE SERVER — a fresh session's local
+  // account-data cache may not carry it yet (sync race), which made this throw
+  // "no default secret storage key configured" on valid passphrases.
+  const defaultKeyId = await defaultSsssKeyId(client);
   if (!defaultKeyId) throw new Error("no default secret storage key configured");
-  const desc = acct("m.secret_storage.key." + defaultKeyId) as
-    | { algorithm?: string; passphrase?: { algorithm?: string; iterations?: number; salt?: string } }
-    | undefined;
+  const desc = (await readAccountData(client, "m.secret_storage.key." + defaultKeyId)) as
+    | { passphrase?: { algorithm?: string; iterations?: number; salt?: string } }
+    | null;
   const p = desc?.passphrase;
   if (!p?.salt || !p.iterations || p.algorithm !== "m.pbkdf2") {
     throw new Error("default SSSS key is not passphrase-derived");
@@ -207,12 +293,11 @@ export async function restoreBackupWithPassphrase(
   const info = await crypto.getKeyBackupInfo();
   if (!info) throw new Error("no key backup on server");
 
-  const { keyId, key: ssssKey } = await deriveSsssKeyFromPassphrase(client, passphrase);
+  const { key: ssssKey } = await deriveSsssKeyFromPassphrase(client, passphrase);
 
-  const sss = new ServerSideSecretStorageImpl(client as never, {
-    getSecretStorageKey: async () => [keyId, ssssKey],
-  });
-  const b64 = await sss.get("m.megolm_backup.v1" as never);
+  // W22: try EVERY copy of the secret, not just the one the SDK's single-shot
+  // get() would pick (stale key entries on real accounts caused bad-MAC).
+  const b64 = await decryptSecretWithKey(client, "m.megolm_backup.v1", ssssKey);
   if (!b64) throw new Error("backup key not found in secret storage (wrong passphrase?)");
   const backupKey = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
   await crypto.storeSessionBackupPrivateKey(backupKey, info.version);
@@ -226,18 +311,13 @@ export async function restoreBackupWithPassphrase(
   return res?.total ?? 0;
 }
 
-/** Given the SSSS symmetric key bytes, fetch the backup decryption secret from 4S. */
+/** Given the SSSS symmetric key bytes, fetch the backup decryption secret from 4S.
+ *  W22: routes through decryptSecretWithKey — every encrypted copy is tried. */
 async function backupKeyFromSSSS(
   client: MatrixClient,
   ssssKey: Uint8Array<ArrayBuffer>,
 ): Promise<string> {
-  const sss = new ServerSideSecretStorageImpl(client as never, {
-    getSecretStorageKey: async ({ keys }: { keys: Record<string, unknown> }) => {
-      const keyId = pickSsssKeyId(client, keys);
-      return keyId ? [keyId, ssssKey] : null;
-    },
-  });
-  const b64 = await sss.get("m.megolm_backup.v1" as never);
+  const b64 = await decryptSecretWithKey(client, "m.megolm_backup.v1", ssssKey);
   if (!b64) throw new Error("backup key not found in secret storage");
   return b64;
 }
@@ -250,7 +330,8 @@ export async function restoreBackupWithRecoveryKey(
   const crypto = client.getCrypto();
   if (!crypto) throw new Error("crypto not initialised");
   // the recovery key IS the SSSS key — unlock the backup secret from 4S with it
-  const ssssKey = decodeRecoveryKey(recoveryKey) as Uint8Array<ArrayBuffer>;
+  // (W22: whitespace normalization here too — b28e991 covered only unlockWithSecret)
+  const ssssKey = decodeRecoveryKey(cleanRecoveryKey(recoveryKey)) as Uint8Array<ArrayBuffer>;
   const b64 = await backupKeyFromSSSS(client, ssssKey);
   const info = await crypto.getKeyBackupInfo();
   if (!info) throw new Error("no key backup on server");
@@ -278,22 +359,26 @@ export type UnlockSecret = { passphrase: string } | { recoveryKey: string };
  * and — no bootstrap holder key — js-sdk threw
  * "getSecretStorageKey callback returned falsey" (secret-storage.js:374).
  *
- * This flow proves the secret FIRST (decrypt m.cross_signing.master via a
- * local ServerSideSecretStorageImpl — same pattern as backupKeyFromSSSS),
- * then parks the key so the client-level callback serves it, then runs
+ * This flow proves the secret FIRST (decrypt m.cross_signing.master via
+ * decryptSecretWithKey — EVERY copy in the 4S `encrypted` map is tried, which
+ * is the W22 fix for stale key entries on real Element accounts), then parks
+ * the key so the client-level callback serves it, then runs
  * bootstrapCrossSigning({}) which takes rust's import-from-4S branch (signs
  * the local device via the outgoing-request processor — NO UIAA, so no
  * password param), and finally restores the server key backup.
  *
- * Throws "wrong passphrase or recovery key" on any decryption failure BEFORE
- * mutating anything, and "nothing to unlock — no secrets found in secret
- * storage" when 4S holds neither master secret nor a backup secret.
+ * Throws "wrong passphrase or recovery key" on any decryption failure of the
+ * PROVE step BEFORE mutating anything, and "nothing to unlock — no secrets
+ * found in secret storage" when 4S holds neither master secret nor a backup
+ * secret. If the SDK's single-shot internal cross-signing import fails after
+ * the proof (stale-key accounts — see step 4), the backup restore still runs
+ * and the result reports crossSigningImported: false.
  */
 export async function unlockWithSecret(opts: {
   client: MatrixClient;
   secret: UnlockSecret;
   onProgress?: (p: BackupRestoreProgress) => void;
-}): Promise<{ imported: number }> {
+}): Promise<{ imported: number; crossSigningImported: boolean }> {
   const { client, secret, onProgress } = opts;
   const crypto = client.getCrypto();
   if (!crypto) throw new Error("crypto not initialised — call with an initCrypto session");
@@ -307,7 +392,7 @@ export async function unlockWithSecret(opts: {
     // stray whitespace or the occasional typo, and the SDK's raw
     // "Incorrect parity" surfaced verbatim — normalize first, then turn
     // format failures into actionable copy.
-    const cleaned = secret.recoveryKey.replace(/\s+/g, "");
+    const cleaned = cleanRecoveryKey(secret.recoveryKey);
     try {
       key = decodeRecoveryKey(cleaned) as Uint8Array<ArrayBuffer>;
     } catch (err) {
@@ -322,30 +407,20 @@ export async function unlockWithSecret(opts: {
   }
 
   // 2) PROVE the secret before mutating anything: decrypt the cross-signing
-  //    master secret through a local storage (MAC mismatch throws).
-  const sss = new ServerSideSecretStorageImpl(client as never, {
-    getSecretStorageKey: async ({ keys }: { keys: Record<string, unknown> }) => {
-      const keyId = pickSsssKeyId(client, keys);
-      return keyId ? [keyId, key] : null;
-    },
-  });
-  let master: string | undefined;
-  try {
-    master = await sss.get("m.cross_signing.master" as never);
-  } catch {
-    throw new Error("wrong passphrase or recovery key");
-  }
+  //    master secret (W22: decryptSecretWithKey tries EVERY copy of the secret
+  //    in the 4S `encrypted` map — the SDK single-shot get() failed on real
+  //    accounts carrying stale key entries, Sean's prod report: both the
+  //    passphrase AND the recovery key threw "bad MAC"). Null = no copy
+  //    decrypted = wrong secret.
+  const master = await decryptSecretWithKey(client, "m.cross_signing.master", key);
   if (!master) {
-    // no master secret in 4S: accept a successful backup-secret fetch when a
-    // key backup exists; otherwise there is nothing this flow can restore.
+    // no master secret decryptable in 4S: accept a successful backup-secret
+    // fetch when a key backup exists; otherwise there is nothing this flow
+    // can restore.
     const hasBackup = Boolean(await crypto.getKeyBackupInfo());
     if (!hasBackup) throw new Error("nothing to unlock — no secrets found in secret storage");
-    try {
-      const backupSecret = await sss.get("m.megolm_backup.v1" as never);
-      if (!backupSecret) throw new Error("absent");
-    } catch {
-      throw new Error("wrong passphrase or recovery key");
-    }
+    const backupSecret = await decryptSecretWithKey(client, "m.megolm_backup.v1", key);
+    if (!backupSecret) throw new Error("wrong passphrase or recovery key");
   }
 
   // 3) from here on the client-level callback serves the key — this is what
@@ -362,7 +437,24 @@ export async function unlockWithSecret(opts: {
 
   // 4) import the cross-signing identity from 4S into this device (no UIAA on
   //    the import branch: device signing rides the outgoing-request processor).
-  await crypto.bootstrapCrossSigning({});
+  //
+  //    W22: this call's internal secretStorage.get() is SINGLE-SHOT (see the
+  //    limitation documented in sdk.ts): on an account whose cross-signing
+  //    secrets ONLY carry current-key entries, a stale-but-valid key (proven
+  //    against the backup secret above) cannot drive that import and the SDK
+  //    throws "bad MAC". Never leak the raw string; the user's history is
+  //    still recoverable, so continue to step 5 and report the partial result
+  //    via crossSigningImported=false. Wrong-password/UIA rejections stay
+  //    honest and propagate verbatim (b28e991 rule).
+  let crossSigningImported = true;
+  try {
+    await crypto.bootstrapCrossSigning({});
+  } catch (err) {
+    const m = String((err as Error)?.message ?? err);
+    if (/password|forbidden|403|uia|flow/i.test(m)) throw err;
+    if (!/bad MAC|could not decrypt|returned falsey|unknown key/i.test(m)) throw err;
+    crossSigningImported = false;
+  }
 
   // 5) key backup restore. HS-A-proven (W14): js-sdk 45 restoreKeyBackup only
   //    decrypts with a backup key CACHED in the machine — rust-crypto.ts:1511
@@ -372,7 +464,8 @@ export async function unlockWithSecret(opts: {
   let imported = 0;
   const info = await crypto.getKeyBackupInfo();
   if (info) {
-    const b64 = await sss.get("m.megolm_backup.v1" as never);
+    // W22: multi-copy fetch — same stale-entry failure shape applies here.
+    const b64 = await decryptSecretWithKey(client, "m.megolm_backup.v1", key);
     if (b64) {
       const backupKey = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
       await crypto.storeSessionBackupPrivateKey(backupKey, info.version);
@@ -386,5 +479,5 @@ export async function unlockWithSecret(opts: {
     } as never);
     imported = res?.total ?? 0;
   }
-  return { imported };
+  return { imported, crossSigningImported };
 }

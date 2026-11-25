@@ -35,6 +35,12 @@ function callbackOf(client: MatrixClient): SSSSCallback {
 }
 
 function seedDefaultKey(client: MatrixClient, keyId: string | null): void {
+  const content = keyId ? { key: keyId } : undefined;
+  // W22: pickSsssKeyId reads m.secret_storage.default_key FROM THE SERVER first
+  // (fresh-session race fix); fall back to the local cache stub when it is gone.
+  (client as unknown as { getAccountDataFromServer: (t: string) => Promise<Record<string, unknown> | null> })
+    .getAccountDataFromServer = async (t: string) =>
+    t === "m.secret_storage.default_key" && content ? content : null;
   (client as unknown as { getAccountData: (t: string) => { getContent: () => unknown } | undefined }).getAccountData =
     (t: string) =>
       t === "m.secret_storage.default_key" && keyId ? { getContent: () => ({ key: keyId }) } : undefined;

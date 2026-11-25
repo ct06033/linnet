@@ -20,7 +20,7 @@ import { describeSecurityAccountText, type SecurityAccountDescription } from "@l
 import type { SecurityAdapter } from "./Security.js";
 import type { SecurityStatus } from "./state.js";
 
-type Mode = "probing" | "none" | "setup" | "unlock" | "working" | "showKey" | "error" | "reset";
+type Mode = "probing" | "none" | "setup" | "unlock" | "working" | "showKey" | "error" | "reset" | "rotate";
 
 /**
  * W22 (Sean prod): the gate/security center must NEVER surface raw SDK crypto
@@ -262,6 +262,16 @@ export function SecurityGate(props: GateProps): JSX.Element | null {
               >
                 Forgot both? Reset your security access
               </button>
+              {/* W24 entry — NON-destructive rotation: prove the current key,
+                  set a new passphrase, history decrypts, identity is kept.
+                  Always available here (Sean: users hit the wall on attempt 1). */}
+              <button
+                className="linkbtn"
+                data-testid="rotate-entry"
+                onClick={() => { setMessage(""); setMode("rotate"); }}
+              >
+                Lost your passphrase? Rotate your recovery method
+              </button>
               {/* W23-D: always-available disclosure (auto-opens after 2 failures) */}
               <button className="linkbtn" data-testid="show-diagnostics" onClick={() => setShowDiagnostics((v) => !v)}>
                 {showDiagnostics ? "Hide account details" : "What does my account have? Show details"}
@@ -272,6 +282,14 @@ export function SecurityGate(props: GateProps): JSX.Element | null {
         )}
         {mode === "reset" && client && (
           <ResetSecurityPanel
+            client={client}
+            adapter={adapter}
+            onDone={() => void probe()} // -> ready -> gate closes
+            onCancel={() => { setMessage(""); setMode("unlock"); }}
+          />
+        )}
+        {mode === "rotate" && client && (
+          <RotateSecurityPanel
             client={client}
             adapter={adapter}
             onDone={() => void probe()} // -> ready -> gate closes
@@ -585,6 +603,212 @@ export function ResetSecurityPanel(props: {
       <div className="gate-actions">
         <button className="primary" onClick={() => setStep("form")} data-testid="reset-retry">Try again</button>
         {props.onCancel && <button onClick={props.onCancel} data-testid="reset-cancel">Back</button>}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * W24 ROUTE E — the NON-destructive recovery-method rotation (Sean's exact
+ * flow, verbatim intent): confirm the CURRENT RECOVERY KEY (Element's key;
+ * the passphrase is the same door via the toggle) → choose a NEW security
+ * passphrase → Linnet rotates 4S, RE-WRAPS every secret under the new key,
+ * decrypts this device's history NOW and keeps the cross-signing identity.
+ * The old credential stops working for 4S fetches afterwards — the copy says
+ * exactly that (banned: "recover" framing, any promise of old-key access).
+ *
+ * Steps: prove → passphrase → working → forced-ack of the NEW key → done.
+ * Edge H (master never stored in 4S — pre-SSSS Element accounts): core still
+ * completes; the key view adds the honest verify-elsewhere note.
+ * Error honesty (b28e991): only the decryption family is reworded via
+ * mapSecretStorageError; server/UIA-shaped strings stay verbatim. Credentials
+ * are cleared from state on failure (W23-A rule).
+ */
+export function RotateSecurityPanel(props: {
+  client: MatrixClient;
+  adapter: SecurityAdapter;
+  onDone: () => void;
+  onCancel?: () => void;
+}): JSX.Element {
+  const [step, setStep] = useState<"prove" | "passphrase" | "working" | "showKey" | "error">("prove");
+  const [proofRoute, setProofRoute] = useState<"key" | "passphrase">("key");
+  const [proof, setProof] = useState("");
+  const [pass1, setPass1] = useState("");
+  const [pass2, setPass2] = useState("");
+  const [recoveryKey, setRecoveryKey] = useState("");
+  const [edgeH, setEdgeH] = useState(false);
+  const [imported, setImported] = useState(0);
+  const [message, setMessage] = useState("");
+
+  const proofReady = proof.trim().length > 0;
+  const passReady = pass1.length >= 8 && pass1 === pass2;
+
+  async function go(): Promise<void> {
+    if (!proofReady || !passReady) return;
+    setStep("working");
+    try {
+      const r = await props.adapter.rotateRecovery({
+        client: props.client,
+        userId: props.client.getUserId() ?? "",
+        secret: proofRoute === "passphrase" ? { passphrase: proof } : { recoveryKey: proof },
+        passphrase: pass1,
+        onProgress: (p) => {
+          if (typeof p.imported === "number") setImported(p.imported);
+        },
+      });
+      // no sensitive input kept in state after success — only the one-time key
+      setProof("");
+      setPass1("");
+      setPass2("");
+      setEdgeH(!r.masterSecretWasStored);
+      setRecoveryKey(r.recoveryKey);
+      setStep("showKey");
+    } catch (err) {
+      setProof("");
+      setPass1("");
+      setPass2("");
+      setMessage(mapSecretStorageError((err as Error).message || String(err)));
+      setStep("error");
+    }
+  }
+
+  if (step === "prove") {
+    return (
+      <div className="rotate-panel" data-testid="rotate-prove">
+        <h3>Confirm your current recovery key</h3>
+        <p className="gate-copy">
+          Rotating your recovery method keeps your message history and your verification identity — it only changes
+          the credential that protects them. Proof first: enter what you use TODAY.
+        </p>
+        <label className="gate-field">
+          {proofRoute === "key" ? "Current recovery key" : "Current security passphrase"}
+          <input
+            // recovery key UNMASKED with normalization rules per W21 hotfix;
+            // passphrase masked like every other passphrase field
+            type={proofRoute === "key" ? "text" : "password"}
+            aria-label={proofRoute === "key" ? "Current recovery key" : "Current security passphrase"}
+            value={proof}
+            onChange={(e) => setProof(e.target.value)}
+            autoComplete="off"
+            spellCheck={false}
+            data-testid="rotate-proof"
+          />
+        </label>
+        {proofRoute === "key" && (
+          <p className="gate-copy" data-testid="rotate-key-hint">
+            Groups of 4 characters starting with E, copied from Element: Settings → Security &amp; Privacy → Recovery Key.
+          </p>
+        )}
+        <button
+          className="linkbtn"
+          data-testid="rotate-proof-toggle"
+          onClick={() => {
+            setProof("");
+            setProofRoute(proofRoute === "key" ? "passphrase" : "key");
+          }}
+        >
+          {proofRoute === "key" ? "Use my passphrase instead" : "Use my recovery key instead"}
+        </button>
+        <div className="gate-actions">
+          <button className="primary" disabled={!proofReady} onClick={() => setStep("passphrase")} data-testid="rotate-prove-next">
+            Continue
+          </button>
+          {props.onCancel && <button onClick={props.onCancel} data-testid="rotate-cancel">Back</button>}
+        </div>
+      </div>
+    );
+  }
+
+  if (step === "passphrase") {
+    return (
+      <div className="rotate-panel" data-testid="rotate-passphrase">
+        <h3>Choose your new security passphrase</h3>
+        <p className="gate-copy">
+          From now on this passphrase (or the new recovery key you’ll be shown once) unlocks your history on every
+          device. Your current credential stops working for future logins — nothing else changes.
+        </p>
+        <label className="gate-field">
+          New security passphrase (min 8 characters)
+          <input
+            type="password"
+            aria-label="New security passphrase"
+            value={pass1}
+            onChange={(e) => setPass1(e.target.value)}
+            autoComplete="new-password"
+            data-testid="rotate-pass1"
+          />
+        </label>
+        <label className="gate-field">
+          Confirm new passphrase
+          <input
+            type="password"
+            aria-label="Confirm new passphrase"
+            value={pass2}
+            onChange={(e) => setPass2(e.target.value)}
+            autoComplete="new-password"
+            data-testid="rotate-pass2"
+          />
+        </label>
+        <div className="gate-actions">
+          <button className="primary" disabled={!passReady} onClick={() => void go()} data-testid="rotate-go">
+            Rotate &amp; decrypt my history
+          </button>
+          <button onClick={() => { setMessage(""); setStep("prove"); }} data-testid="rotate-back">Back</button>
+        </div>
+      </div>
+    );
+  }
+
+  if (step === "working") {
+    return (
+      <div className="rotate-panel" data-testid="rotate-working">
+        <h3>Rotating your recovery method</h3>
+        <p className="gate-copy">
+          Rotating keys and decrypting your history… {imported > 0 ? `${imported} message keys imported.` : ""} This
+          runs once — don’t close the window.
+        </p>
+      </div>
+    );
+  }
+
+  if (step === "showKey") {
+    return (
+      <div className="rotate-panel" data-testid="rotate-showkey">
+        <h3>Save your NEW recovery key</h3>
+        <p className="gate-copy">
+          The old recovery key and passphrase no longer work for future logins — this is the only time the new key is
+          shown. Copy it somewhere safe (a password manager is ideal). Your history and your verification identity are
+          unchanged.
+        </p>
+        {edgeH && (
+          <p className="gate-copy" data-testid="rotate-edgeh">
+            Your identity keys were never stored in your recovery setup — the new passphrase works for history now; to
+            verify this device, use Element&apos;s cross-verification, or full Reset in Linnet.
+          </p>
+        )}
+        <textarea className="gate-key" readOnly value={recoveryKey} rows={3} onFocus={(e) => e.currentTarget.select()} data-testid="rotate-newkey" />
+        <button
+          className="primary"
+          data-testid="rotate-ack"
+          onClick={() => {
+            setRecoveryKey("");
+            props.onDone();
+          }}
+        >
+          I saved it — finish
+        </button>
+      </div>
+    );
+  }
+
+  // error step — only the decryption family is reworded; server strings verbatim
+  return (
+    <div className="rotate-panel" data-testid="rotate-error">
+      <h3>Couldn’t rotate</h3>
+      <p className="gate-copy" role="status" data-testid="rotate-error-message">{message}</p>
+      <div className="gate-actions">
+        <button className="primary" onClick={() => { setMessage(""); setStep("prove"); }} data-testid="rotate-retry">Try again</button>
+        {props.onCancel && <button onClick={props.onCancel} data-testid="rotate-cancel">Back</button>}
       </div>
     </div>
   );

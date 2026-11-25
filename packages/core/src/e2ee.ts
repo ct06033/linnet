@@ -352,6 +352,33 @@ export async function restoreBackupWithRecoveryKey(
 export type UnlockSecret = { passphrase: string } | { recoveryKey: string };
 
 /**
+ * W24 extraction (shared by unlockWithSecret AND rotateRecoveryMethod):
+ * derive candidate SSSS key BYTES from whatever the user typed. Passphrase →
+ * PBKDF2 against the account's default-key description (server-first reads);
+ * recovery key → whitespace-normalized base58 decode with actionable copy for
+ * format failures (Sean prod report 11-24: the raw "Incorrect parity" leaked
+ * verbatim pre-b28e991).
+ */
+async function deriveCandidateKey(client: MatrixClient, secret: UnlockSecret): Promise<Uint8Array<ArrayBuffer>> {
+  if ("passphrase" in secret && typeof secret.passphrase === "string") {
+    return (await deriveSsssKeyFromPassphrase(client, secret.passphrase)).key;
+  }
+  if ("recoveryKey" in secret && typeof secret.recoveryKey === "string") {
+    const cleaned = cleanRecoveryKey(secret.recoveryKey);
+    try {
+      return decodeRecoveryKey(cleaned) as Uint8Array<ArrayBuffer>;
+    } catch (err) {
+      const m = String((err as Error)?.message ?? err);
+      if (/non-base58|invalid character|base58/i.test(m)) {
+        throw new Error("That doesn't look like a recovery key. The format is groups of 4 characters starting with E (no 0, O, I or l). If you copied an OLD Element backup key (one long word starting with a lowercase letter), use your security passphrase instead.");
+      }
+      throw new Error("That recovery key failed its checksum — re-copy it from Element (Settings → Security & Privacy → Recovery Key) without typos or extra characters.");
+    }
+  }
+  throw new Error("unlock: provide a passphrase or a recovery key");
+}
+
+/**
  * W14 UNLOCK-SESSION: an account that ALREADY has Secure Secret Storage (set
  * up by Element or another Linnet session — Sean's real case) but a locked
  * fresh session. The old crash path: bootstrapSecurity's
@@ -385,27 +412,7 @@ export async function unlockWithSecret(opts: {
   if (!crypto) throw new Error("crypto not initialised — call with an initCrypto session");
 
   // 1) derive the candidate SSSS key bytes from whatever the user typed
-  let key: Uint8Array<ArrayBuffer>;
-  if ("passphrase" in secret && typeof secret.passphrase === "string") {
-    key = (await deriveSsssKeyFromPassphrase(client, secret.passphrase)).key;
-  } else if ("recoveryKey" in secret && typeof secret.recoveryKey === "string") {
-    // Sean prod report (11-24): keys re-typed/copied from Element arrive with
-    // stray whitespace or the occasional typo, and the SDK's raw
-    // "Incorrect parity" surfaced verbatim — normalize first, then turn
-    // format failures into actionable copy.
-    const cleaned = cleanRecoveryKey(secret.recoveryKey);
-    try {
-      key = decodeRecoveryKey(cleaned) as Uint8Array<ArrayBuffer>;
-    } catch (err) {
-      const m = String((err as Error)?.message ?? err);
-      if (/non-base58|invalid character|base58/i.test(m)) {
-        throw new Error("That doesn't look like a recovery key. The format is groups of 4 characters starting with E (no 0, O, I or l). If you copied an OLD Element backup key (one long word starting with a lowercase letter), use your security passphrase instead.");
-      }
-      throw new Error("That recovery key failed its checksum — re-copy it from Element (Settings → Security & Privacy → Recovery Key) without typos or extra characters.");
-    }
-  } else {
-    throw new Error("unlock: provide a passphrase or a recovery key");
-  }
+  const key = await deriveCandidateKey(client, secret);
 
   // 2) PROVE the secret before mutating anything: decrypt the cross-signing
   //    master secret (W22: decryptSecretWithKey tries EVERY copy of the secret
@@ -584,6 +591,171 @@ export async function resetSecurityAccess(opts: {
   await crypto.checkKeyBackupAndEnable();
 
   return { recoveryKey };
+}
+
+// ---------------------------------------------------------------------------
+// W24 ROUTE E — ROTATE RECOVERY METHOD (Sean's exact flow, NON-DESTRUCTIVE):
+// prove the CURRENT credential (recovery key OR passphrase — same door), set
+// a NEW passphrase, Linnet DECRYPTS HISTORY NOW and the new passphrase is the
+// credential for FUTURE logins. The cross-signing IDENTITY IS PRESERVED: this
+// flow NEVER calls setupNewCrossSigning, needs NO UIA and NO account password.
+//
+// Verified against the INSTALLED matrix-js-sdk@45.1.0 sources (Rule 1):
+//   * rust-crypto.js:726 bootstrapSecretStorage({setupNewSecretStorage:true,
+//     createSecretStorageKey}) only ADDS the new key (addKey + setDefaultKeyId
+//     + cacheSecretStorageKey callback). It re-stores the cross-signing
+//     secrets ONLY IF THIS MACHINE caches their private keys
+//     (olmMachine.exportCrossSigningKeys()), and the backup key ONLY via
+//     saveBackupKeyToStorage() when the machine caches a decryption key that
+//     MATCHES the current backup version. On the locked-out/rotating device
+//     (fresh login, nothing imported) neither holds — so Linnet MUST re-wrap
+//     every secret it decrypted in the proof step itself. The LIVE test is
+//     the arbiter: it asserts the new default key decrypts every secret.
+//   * secret-storage.js:249 store() REPLACES the whole `encrypted` map with
+//     the single entry under the current default key — re-wrapping therefore
+//     RETIRES the old credential for 4S fetches automatically (the brief's
+//     "K1 stops working"), with no explicit delete of old entries.
+//   * CrossSigningIdentity.js bootstrapCrossSigning WITHOUT setupNewCrossSigning
+//     takes the import-from-4S branch (get m.cross_signing.* via the SDK's
+//     single-shot callback + importCrossSigningKeys) — the identity-stays-
+//     identical requirement. setupNewCrossSigning is the W23-B destructive
+//     path; it MUST NEVER appear here (the unit tests assert the opts passed).
+//
+// Order (brief): proof-decrypt (READS ONLY) precedes every account-data
+// WRITE; a failed proof mutates NOTHING (the standing no-mutation rule).
+
+export interface SecurityRotation {
+  /** ONE-TIME-VIEW secret: base58 of the NEW passphrase-derived key — what
+   *  Element's "show recovery key" will show from now on. */
+  recoveryKey: string;
+  /** megolm keys restored from the (unchanged) server backup on THIS device */
+  imported: number;
+  /** false = edge H (master secret was not in 4S) or the documented
+   *  single-shot import failure — history still works, device stays unverified */
+  crossSigningImported: boolean;
+  /** false = edge H: the cross-signing MASTER secret was not (decryptably)
+   *  stored in 4S — rotation still completes; UI shows the verify-elsewhere copy */
+  masterSecretWasStored: boolean;
+}
+
+/** the four secrets Linnet knows how to re-wrap, in brief order */
+const ROTATE_SECRET_NAMES = [
+  "m.cross_signing.master",
+  "m.cross_signing.self_signing",
+  "m.cross_signing.user_signing",
+  "m.megolm_backup.v1",
+] as const;
+
+export async function rotateRecoveryMethod(opts: {
+  client: MatrixClient;
+  userId: string;
+  /** proof: EITHER the current recovery key OR the current passphrase */
+  secret: UnlockSecret;
+  /** the NEW security passphrase (min 8, enforced here) */
+  newPassphrase: string;
+  /** handed the new recovery key as soon as the rotation commits — lets the
+   *  UI force-acknowledge it even if a later step fails */
+  onKey?: (recoveryKey: string) => void;
+  onProgress?: (p: BackupRestoreProgress) => void;
+}): Promise<SecurityRotation> {
+  const { client, userId, secret, newPassphrase, onKey, onProgress } = opts;
+  if (newPassphrase.length < 8) throw new Error("passphrase too short (min 8)");
+  const crypto = client.getCrypto();
+  if (!crypto) throw new Error("crypto not initialised — call with an initCrypto session");
+
+  // 1) PROVE (reads only): derive candidate bytes from the typed secret —
+  //    whitespace-normalized exactly like unlockWithSecret (same helper) —
+  //    then decrypt every secret we know with them. ANY decryptable proof is
+  //    OK; nothing decryptable → actionable reject, NO mutation anywhere.
+  const oldKey = await deriveCandidateKey(client, secret);
+  const decrypted = new Map<string, string>();
+  for (const name of ROTATE_SECRET_NAMES) {
+    const value = await decryptSecretWithKey(client, name, oldKey);
+    if (value !== null) decrypted.set(name, value);
+  }
+  if (decrypted.size === 0) throw new Error("wrong passphrase or recovery key");
+
+  // 2) EDGE H detection: master (decryptably) present in 4S?
+  const masterSecretWasStored = decrypted.has("m.cross_signing.master");
+
+  // 3) NEW PASSPHRASE -> new PBKDF2-derived SSSS key (the SDK builds the exact
+  //    m.pbkdf2 keyInfo itself — same pattern as bootstrapSecurity/
+  //    resetSecurityAccess). Seed BOTH client-level holders NOW so every SDK
+  //    callback (addKey caching, our own stores, the later import) serves the
+  //    new key — a stale unlocked-holder key (user unlocked this device with
+  //    the old secret before rotating) must never encrypt under the new id.
+  const generated = await crypto.createRecoveryKeyFromPassphrase(newPassphrase);
+  rememberBootstrapKey(client, generated.privateKey);
+  setUnlockedSsssKey(client, generated.privateKey);
+
+  // 4) ROTATE 4S: publish the new key + make it the default. NO
+  //    setupNewKeyBackup — the server backup version and its keys are the
+  //    user's history; rotation must not touch them.
+  await crypto.bootstrapSecretStorage({
+    setupNewSecretStorage: true,
+    createSecretStorageKey: async () => generated,
+  });
+
+  // RE-WRAP: store every secret proven in step 1 under the new default key.
+  // On a locked device bootstrapSecretStorage does NOT do this itself (see
+  // the 45.1 findings above); where it did (machine-cached keys), these
+  // stores are harmless idempotent overwrites. store() replaces each
+  // `encrypted` map, retiring the old credential for 4S fetches.
+  const sss = client.secretStorage;
+  for (const [name, value] of decrypted) {
+    await sss.store(name as never, value);
+  }
+
+  const recoveryKey = generated.encodedPrivateKey ?? encodeRecoveryKey(generated.privateKey);
+  if (!recoveryKey) throw new Error("no recovery key generated");
+  onKey?.(recoveryKey);
+
+  // 5) UNLOCK THIS DEVICE with the new key — the exact proven
+  //    unlockWithSecret step 3-5 pattern: holders are set (step 3 above),
+  //    FORCE the public-keys query FIRST (W14 trap: importCrossSigningKeys
+  //    fails silently without them), then bootstrapCrossSigning({}) —
+  //    IMPORT branch, never setupNewCrossSigning — then the backup side.
+  //    (edge H: with no master secret there is nothing to import — skip the
+  //    whole cross-signing leg, keys-query included.)
+  let crossSigningImported = true;
+  if (masterSecretWasStored) {
+    const me = client.getUserId() ?? userId;
+    if (me) await crypto.getUserDeviceInfo([me], true);
+    try {
+      await crypto.bootstrapCrossSigning({});
+    } catch (err) {
+      const m = String((err as Error)?.message ?? err);
+      if (/password|forbidden|403|uia|flow/i.test(m)) throw err;
+      if (!/bad MAC|could not decrypt|returned falsey|unknown key/i.test(m)) throw err;
+      crossSigningImported = false;
+    }
+  } else {
+    // edge H: nothing to import — completing the rotation is non-fatal; the
+    // UI explains how to verify this device another way.
+    crossSigningImported = false;
+  }
+
+  let imported = 0;
+  const info = await crypto.getKeyBackupInfo();
+  if (info) {
+    const b64 = decrypted.get("m.megolm_backup.v1");
+    if (b64) {
+      // HS-A-proven (W14): restoreKeyBackup only decrypts with the backup key
+      // CACHED in the machine — feed it from the re-wrapped 4S secret first.
+      const backupKey = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      await crypto.storeSessionBackupPrivateKey(backupKey, info.version);
+    }
+    await crypto.checkKeyBackupAndEnable();
+    const res = await crypto.restoreKeyBackup({
+      progressCallback: (p: unknown) => {
+        const q = p as { total?: number; imported?: number };
+        onProgress?.({ total: q.total, imported: q.imported });
+      },
+    } as never);
+    imported = res?.total ?? 0;
+  }
+
+  return { recoveryKey, imported, crossSigningImported, masterSecretWasStored };
 }
 
 // ---------------------------------------------------------------------------

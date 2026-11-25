@@ -32,7 +32,7 @@ import {
   unlockInitial, unlockReduce, type UnlockStep,
   probeStatus, type SecurityStatus, autoPassphrase,
 } from "./state.js";
-import { mapSecretStorageError, ResetSecurityPanel, SecurityDiagnostics } from "./gate.js";
+import { mapSecretStorageError, ResetSecurityPanel, RotateSecurityPanel, SecurityDiagnostics } from "./gate.js";
 import type { SecurityAccountDescription } from "@linnet/core";
 
 export interface SecurityAdapter {
@@ -60,6 +60,23 @@ export interface SecurityAdapter {
    * Core: resetSecurityAccess.
    */
   resetSecurity(opts: { client: MatrixClient; userId: string; password: string; passphrase: string }): Promise<{ recoveryKey: string }>;
+  /**
+   * W24 ROUTE E — rotate the recovery method NON-DESTRUCTIVELY (Sean's flow):
+   * prove the CURRENT credential (recovery key OR passphrase), set a NEW
+   * passphrase; history decrypts NOW, the new passphrase is the credential
+   * for future logins, the old one stops working for 4S fetches. The
+   * cross-signing identity is PRESERVED (no setupNewCrossSigning, no UIA,
+   * no account password). Core: rotateRecoveryMethod. masterSecretWasStored
+   * = false is edge H (identity keys never made it into 4S): the rotation
+   * completed but this device stays unverified.
+   */
+  rotateRecovery(opts: {
+    client: MatrixClient;
+    userId: string;
+    secret: { passphrase: string } | { recoveryKey: string };
+    passphrase: string;
+    onProgress?: (p: { total?: number; imported?: number }) => void;
+  }): Promise<{ recoveryKey: string; imported: number; crossSigningImported: boolean; masterSecretWasStored: boolean }>;
   /**
    * W23-D: "what your account actually has" — server-first reads of the 4S
    * key descriptions, the four secrets' guarding key ids and the backup
@@ -167,7 +184,7 @@ export interface SheetProps {
 export function SecuritySheet(props: SheetProps): ReactNode {
   const { client, adapter, onClose } = props;
   const [status, setStatus] = useState<SecurityStatus | null>(null);
-  const [flow, setFlow] = useState<"none" | "setup" | "recover" | "unlock" | "reset" | "sessions">("none");
+  const [flow, setFlow] = useState<"none" | "setup" | "recover" | "unlock" | "reset" | "rotate" | "sessions">("none");
   // W23-D disclosure in the center (always available while not ready)
   const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [verify, setVerify] = useState<VerifyHandle | null>(null);
@@ -239,6 +256,10 @@ export function SecuritySheet(props: SheetProps): ReactNode {
                 <button className="linkbtn danger" onClick={() => setFlow("reset")} data-testid="start-reset">
                   Forgot both? Reset your security access
                 </button>
+                {/* W24 center entry — NON-destructive rotation (identity kept) */}
+                <button className="linkbtn" onClick={() => setFlow("rotate")} data-testid="start-rotate">
+                  Recovery settings → Rotate
+                </button>
               </div>
             )}
             {status?.cryptoAvailable && status.ready === false && (
@@ -270,6 +291,14 @@ export function SecuritySheet(props: SheetProps): ReactNode {
         {flow === "unlock" && <UnlockFlow client={client} adapter={adapter} onDone={() => { setFlow("none"); refresh(); }} />}
         {flow === "reset" && (
           <ResetSecurityPanel
+            client={client}
+            adapter={adapter}
+            onDone={() => { setFlow("none"); refresh(); }}
+            onCancel={() => setFlow("none")}
+          />
+        )}
+        {flow === "rotate" && (
+          <RotateSecurityPanel
             client={client}
             adapter={adapter}
             onDone={() => { setFlow("none"); refresh(); }}

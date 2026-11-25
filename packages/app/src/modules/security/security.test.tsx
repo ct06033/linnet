@@ -172,6 +172,13 @@ function mockAdapter(over: Partial<SecurityAdapter> = {}): SecurityAdapter & { c
       ready = true;
       return { recoveryKey: "BrandNew Recov eryK ey4321" };
     },
+    // W24 route E: fake NON-destructive rotation — records the proof shape +
+    // new passphrase, flips ready, hands back the new key
+    async rotateRecovery(opts: { secret: { passphrase?: string; recoveryKey?: string }; passphrase: string }) {
+      calls.push(`rotate:${opts.secret.recoveryKey ? "key" : "passphrase"}:${opts.passphrase}`);
+      ready = true;
+      return { recoveryKey: "NewRot eKey43 21abcd ef0123 456789", imported: 6, crossSigningImported: true, masterSecretWasStored: true };
+    },
     // W23-D: composed fake account-data readout (rule-2 headline shape)
     async describeAccount() {
       calls.push("describe");

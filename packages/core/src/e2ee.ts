@@ -1,4 +1,5 @@
 import type { MatrixClient } from "matrix-js-sdk";
+import { Method } from "matrix-js-sdk/lib/http-api/method.js";
 import { decodeRecoveryKey, encodeRecoveryKey } from "matrix-js-sdk/lib/crypto-api/recovery-key.js";
 import { keyFromAuthData } from "matrix-js-sdk/lib/common-crypto/key-passphrase.js";
 import decryptAESSecretStorageItem from "matrix-js-sdk/lib/utils/decryptAESSecretStorageItem.js";
@@ -480,4 +481,311 @@ export async function unlockWithSecret(opts: {
     imported = res?.total ?? 0;
   }
   return { imported, crossSigningImported };
+}
+
+// ---------------------------------------------------------------------------
+// W23 route B — DESTRUCTIVE "Reset security access" for the locked-out
+// account (forgot passphrase AND lost recovery key). This is NOT a recovery:
+// nothing protected by the old SSSS comes back — the flow rotates everything
+// and hands the user a brand-new recovery key.
+//
+// Verified against the INSTALLED matrix-js-sdk@45.1.0 .d.ts + rust-crypto.js
+// (Rule 1 — the wave spec's "expected shape" was wrong in two ways):
+//   * CryptoApi.bootstrapSecretStorage(CreateSecretStorageOpts) — 45.1's
+//     CreateSecretStorageOpts is { createSecretStorageKey?, setupNewSecretStorage?,
+//     setupNewKeyBackup? }. There is NO authQueries field anywhere in this
+//     version; SSSS rotation is plain account-data writes and carries NO UIA.
+//     The UIA surface of this flow is the cross-signing upload below.
+//   * CryptoApi.bootstrapCrossSigning({ setupNewCrossSigning: true,
+//     authUploadDeviceSigningKeys }) — rust's resetCrossSigning() creates NEW
+//     identity keys (old cached private keys are irrelevant), exports the
+//     private keys into the (already-rotated) 4S, and publishes via
+//     makeOutgoingRequest(request, authUploadDeviceSigningKeys) — POST
+//     /keys/device_signing/upload is UIA-gated: the payload MUST carry
+//     identifier {type:"m.id.user", user} (W5a trap: without it Synapse
+//     answers M_INVALID_PARAM).
+//   * CryptoApi.resetKeyBackup() — internally backupManager.setupKeyBackup():
+//     deleteAllKeyBackupVersions() FIRST (old server backup gone — the wave
+//     spec's "delete old backup then recreate" is one verified call, no
+//     /room_keys DELETE plumbing needed; 45.1 does NOT UIA-gate room_keys
+//     version create/delete), creates + signs a NEW version with the new
+//     identity, enables the machine backup engine, saves the new decryption
+//     key locally AND stores it in 4S (secretStorageHasAESKey is now true).
+//
+// Order matters (wave spec): rotate SSSS FIRST, THEN cross-signing (the new
+// private keys must land under the new key), THEN backup (the new backup key
+// too). There is NO public "upload all sessions now" API in 45.1 — the rust
+// engine re-queues local sessions when the new backup switches on
+// (enableOrSwitchKeyBackup inside setupKeyBackup + checkKeyBackupAndEnable
+// as belt-and-braces, the W14 machine-side lesson); a key landing in the new
+// backup is PROVEN by the live HS-A test, not assumed.
+//
+// Honesty (b28e991 rule): NOTHING is wrapped here. Wrong-password / UIA 403 /
+// M_INVALID_PARAM propagate verbatim to the caller; the UI maps only the
+// decryption-error family (mapSecretStorageError).
+
+export interface SecurityReset {
+  /** ONE-TIME-VIEW secret: the new base58 recovery key for the fresh 4S key. */
+  recoveryKey: string;
+}
+
+export async function resetSecurityAccess(opts: {
+  client: MatrixClient;
+  userId: string;
+  /** account login password — re-auths the UIA-gated cross-signing upload */
+  password: string;
+  /** the NEW security passphrase the user chooses (min 8, enforced here) */
+  passphrase: string;
+  /** handed the recovery key as soon as the rotation itself succeeds — lets
+   *  the UI show the forced-ack key view even if a later step fails */
+  onKey?: (recoveryKey: string) => void;
+}): Promise<SecurityReset> {
+  const { client, userId, password, passphrase, onKey } = opts;
+  if (passphrase.length < 8) throw new Error("passphrase too short (min 8)");
+  const crypto = client.getCrypto();
+  if (!crypto) throw new Error("crypto not initialised — call with an initCrypto session");
+
+  // 1) SSSS rotation FIRST: a NEW passphrase-derived key becomes the default.
+  //    Seed the bootstrap holder so sdk.ts's client-level getSecretStorageKey
+  //    callback serves it the moment the SDK starts storing secrets under it.
+  const generated = await crypto.createRecoveryKeyFromPassphrase(passphrase);
+  rememberBootstrapKey(client, generated.privateKey);
+  await crypto.bootstrapSecretStorage({
+    setupNewSecretStorage: true,
+    createSecretStorageKey: async () => generated,
+    // setupNewKeyBackup deliberately NOT set — step 3 owns the backup, after
+    // the new identity exists so the new backup gets signed with it.
+  });
+
+  const recoveryKey = generated.encodedPrivateKey ?? encodeRecoveryKey(generated.privateKey);
+  if (!recoveryKey) throw new Error("no recovery key generated");
+  onKey?.(recoveryKey);
+
+  // 2) NEW cross-signing identity. setupNewCrossSigning:true FORCES fresh keys
+  //    (the wave spec rule: old cached private cross-signing keys are gone —
+  //    without forcing, the import-from-4S branch would fail). The UIA request
+  //    happens inside; a wrong password rejects here with the server's own
+  //    message, unmodified.
+  await crypto.bootstrapCrossSigning({
+    setupNewCrossSigning: true,
+    authUploadDeviceSigningKeys: async (makeRequest) => {
+      await makeRequest({
+        type: "m.login.password",
+        identifier: { type: "m.id.user", user: userId },
+        password,
+      } as never);
+    },
+  });
+
+  // 3) Backup: delete-all-old + create-new + sign-with-new-identity + enable
+  //    engine + store new key in the new 4S (all inside resetKeyBackup per the
+  //    45.1 source), then the W14 machine-side enable insurance.
+  await crypto.resetKeyBackup();
+  await crypto.checkKeyBackupAndEnable();
+
+  return { recoveryKey };
+}
+
+// ---------------------------------------------------------------------------
+// W23 route D — "What your account actually has" diagnostics. SERVER-SIDE
+// reads (W22 readAccountData pattern — a fresh session's local cache can lag),
+// plain-object return, NO secret values ever. Key ids are public account data
+// and shown in full; ciphertext/iv/mac fields are never copied out of the
+// encrypted maps (only their key-id index is read).
+
+export interface SecurityAccountKeyInfo {
+  keyId: string;
+  isDefault: boolean;
+  algorithm: string | null;
+  name: string | null;
+  passphraseDerived: boolean;
+  pbkdf2Iterations: number | null;
+  /** names of the known secrets that carry an encrypted copy under this key */
+  guardsSecrets: string[];
+}
+
+export interface SecurityAccountSecretInfo {
+  name: string;
+  exists: boolean;
+  /** key ids whose copies guard this secret (from its `encrypted` map) */
+  keyIds: string[];
+}
+
+export interface SecurityAccountBackupInfo {
+  exists: boolean;
+  version: string | null;
+  algorithm: string | null;
+  count: number | null;
+}
+
+export interface SecurityAccountDescription {
+  homeserver: string;
+  userId: string | null;
+  defaultKeyId: string | null;
+  keys: SecurityAccountKeyInfo[];
+  /** the four 4S secrets Linnet knows about, in spec order */
+  secrets: SecurityAccountSecretInfo[];
+  backup: SecurityAccountBackupInfo;
+  hasPassphraseDerivedKey: boolean;
+  /** some secret copy is guarded by a NON-default key id (W22 stale shape) */
+  staleEntries: boolean;
+  /** actionable head-line, mapped by the W23-D rules */
+  headline: string;
+  notes: string[];
+}
+
+const SECURITY_SECRET_NAMES = [
+  "m.cross_signing.master",
+  "m.cross_signing.self_signing",
+  "m.cross_signing.user_signing",
+  "m.megolm_backup.v1",
+] as const;
+
+export async function describeSecurityAccount(client: MatrixClient): Promise<SecurityAccountDescription> {
+  const defaultKeyId = await defaultSsssKeyId(client);
+
+  const secrets: SecurityAccountSecretInfo[] = [];
+  const keyIds = new Set<string>(defaultKeyId ? [defaultKeyId] : []);
+  for (const name of SECURITY_SECRET_NAMES) {
+    const ev = await readAccountData(client, name);
+    const enc = ev?.encrypted as Record<string, unknown> | undefined;
+    const ids = Object.keys(enc ?? {});
+    for (const id of ids) keyIds.add(id);
+    secrets.push({ name, exists: ids.length > 0, keyIds: ids });
+  }
+  // "every m.secret_storage.key.*": Synapse offers no list endpoint for
+  // account-data TYPES, so beyond the default + guarding ids we best-effort
+  // enumerate the LOCAL sync cache (client.store.accountData, duck-typed —
+  // stub.d.ts declares `readonly accountData: Map<any, any>`). Descriptions
+  // are still read server-first per id below; unknown-only-remote keys simply
+  // stay unlisted on a cache-empty session (honest degraded view).
+  const localStore = (
+    client as unknown as { store?: { accountData?: Map<string, unknown> } }
+  ).store?.accountData;
+  if (localStore instanceof Map) {
+    for (const type of localStore.keys()) {
+      if (typeof type === "string" && type.startsWith("m.secret_storage.key.")) {
+        keyIds.add(type.slice("m.secret_storage.key.".length));
+      }
+    }
+  }
+
+  const keys: SecurityAccountKeyInfo[] = [];
+  for (const keyId of keyIds) {
+    const desc = await readAccountData(client, `m.secret_storage.key.${keyId}`);
+    const p = desc?.passphrase as { algorithm?: string; iterations?: number; salt?: string } | undefined;
+    const passphraseDerived = Boolean(p?.salt && p.algorithm === "m.pbkdf2");
+    keys.push({
+      keyId,
+      isDefault: keyId === defaultKeyId,
+      algorithm: (desc?.algorithm as string | undefined) ?? null,
+      name: (desc?.name as string | undefined) ?? null,
+      passphraseDerived,
+      pbkdf2Iterations: passphraseDerived ? (p?.iterations ?? null) : null,
+      guardsSecrets: secrets.filter((s) => s.keyIds.includes(keyId)).map((s) => s.name),
+    });
+  }
+
+  // Backup version: GET /room_keys/version via client.http.authedRequest —
+  // W17 trap: the Method ENUM (not a bare string), path as string. Degrade to
+  // the crypto surface's cached info when no http seam is available.
+  let backup: SecurityAccountBackupInfo = { exists: false, version: null, algorithm: null, count: null };
+  try {
+    const http = (
+      client as unknown as {
+        http?: { authedRequest?: <T>(method: Method, path: string, q?: undefined, b?: undefined) => Promise<T> };
+      }
+    ).http;
+    let info: Record<string, unknown> | null = null;
+    if (http?.authedRequest) {
+      info = await http.authedRequest<Record<string, unknown> | null>(Method.Get, "/room_keys/version");
+    } else {
+      info = (await client.getCrypto()?.getKeyBackupInfo()) as Record<string, unknown> | null;
+    }
+    const version = typeof info?.version === "string" ? info.version : null;
+    if (version) {
+      const rawCount = info?.count ?? info?.total;
+      backup = {
+        exists: true,
+        version,
+        algorithm: typeof info?.algorithm === "string" ? info.algorithm : null,
+        count: typeof rawCount === "number" ? rawCount : null,
+      };
+    }
+  } catch {
+    // no backup on the server (404) or unreachable — report it absent honestly
+  }
+
+  const master = secrets.find((s) => s.name === "m.cross_signing.master");
+  const hasPassphraseDerivedKey = keys.some((k) => k.passphraseDerived);
+  const def = keys.find((k) => k.isDefault);
+  const staleEntries = secrets.some((s) => s.keyIds.some((id) => id !== defaultKeyId));
+
+  // Head-line mapping (W23-D rules, priority order):
+  let headline: string;
+  if (keys.length === 0 || !master?.exists) {
+    headline =
+      "No cross-signing secret is stored — recovery from this account's 4S is impossible; resetting or another session are the paths.";
+  } else if (!hasPassphraseDerivedKey) {
+    headline =
+      "This account has no security passphrase — only a recovery key. Use the recovery key, or reset.";
+  } else if (def?.passphraseDerived) {
+    const label = def.name && def.name.trim() ? def.name.trim() : `“${def.keyId.slice(0, 12)}…”`;
+    headline = `Your passphrase protects key ${label}. If it was made in Element, it is what Element asks for under Settings → Security & Privacy.`;
+  } else {
+    headline =
+      "This account's current default key is a generated recovery key (no passphrase). Use the recovery key, or reset.";
+  }
+
+  const notes: string[] = [];
+  if (staleEntries) {
+    notes.push(
+      "Some copies of your secrets are protected by an older key — recent Element changes rotated your keys; the current one should still work.",
+    );
+  }
+
+  return {
+    homeserver: client.getHomeserverUrl?.() ?? "",
+    userId: client.getUserId?.() ?? null,
+    defaultKeyId,
+    keys,
+    secrets,
+    backup,
+    hasPassphraseDerivedKey,
+    staleEntries,
+    headline,
+    notes,
+  };
+}
+
+/** Plain-text rendering of a SecurityAccountDescription for "Copy details"
+ *  (support paste). Key ids are PUBLIC account data — shown in full. Never
+ *  includes ciphertext/iv/mac fields or any secret value. */
+export function describeSecurityAccountText(d: SecurityAccountDescription): string {
+  const lines: string[] = [];
+  lines.push("Linnet — what your account has (no secret values)");
+  lines.push(`User: ${d.userId ?? "?"} @ ${d.homeserver || "?"}`);
+  lines.push(`Headline: ${d.headline}`);
+  for (const n of d.notes) lines.push(`Note: ${n}`);
+  lines.push(`Default security key: ${d.defaultKeyId ?? "(none)"}`);
+  lines.push("Security keys:");
+  if (!d.keys.length) lines.push("  (none on this account)");
+  for (const k of d.keys) {
+    const kind = k.passphraseDerived
+      ? `passphrase-derived (pbkdf2, iterations: ${k.pbkdf2Iterations ?? "?"})`
+      : "generated recovery key";
+    lines.push(
+      `  - ${k.keyId}${k.isDefault ? " [default]" : ""} | algorithm: ${k.algorithm ?? "?"} | name: ${k.name ?? "(none)"} | ${kind} | guards: ${k.guardsSecrets.length ? k.guardsSecrets.join(", ") : "(nothing)"}`,
+    );
+  }
+  lines.push("Secrets in 4S:");
+  for (const s of d.secrets) {
+    lines.push(`  - ${s.name}: ${s.exists ? `stored, guarded under key id(s): ${s.keyIds.join(", ")}` : "NOT stored"}`);
+  }
+  lines.push(
+    d.backup.exists
+      ? `Key backup: version ${d.backup.version} (${d.backup.algorithm ?? "algorithm?"}), ${d.backup.count ?? "?"} keys backed up`
+      : "Key backup: none on the server",
+  );
+  return lines.join("\n");
 }

@@ -15,6 +15,7 @@ import {
   makeSyncSnapshot,
   type FakeEventLike,
   type FakeHomeserverControls,
+  type SecurityAccountDescription,
 } from "@linnet/core";
 import { App } from "../../App.js";
 import { setSessionManagerForTests } from "../../session-context.js";
@@ -164,6 +165,44 @@ function mockAdapter(over: Partial<SecurityAdapter> = {}): SecurityAdapter & { c
     },
     async logoutAll() {
       calls.push("logoutAll");
+    },
+    // W23-B: fake reset — records the call and flips ready like a real HS would
+    async resetSecurity(opts: { passphrase: string }) {
+      calls.push(`reset:${opts.passphrase}`);
+      ready = true;
+      return { recoveryKey: "BrandNew Recov eryK ey4321" };
+    },
+    // W23-D: composed fake account-data readout (rule-2 headline shape)
+    async describeAccount() {
+      calls.push("describe");
+      return {
+        homeserver: "https://hs.test",
+        userId: ALICE.userId,
+        defaultKeyId: "Bcurrent",
+        keys: [
+          {
+            keyId: "Bcurrent",
+            isDefault: true,
+            algorithm: "m.secret_storage.v1.aes-hmac-sha2",
+            name: "Element security key",
+            passphraseDerived: true,
+            pbkdf2Iterations: 500000,
+            guardsSecrets: ["m.cross_signing.master", "m.cross_signing.self_signing", "m.cross_signing.user_signing", "m.megolm_backup.v1"],
+          },
+        ],
+        secrets: [
+          { name: "m.cross_signing.master", exists: true, keyIds: ["Bcurrent"] },
+          { name: "m.cross_signing.self_signing", exists: true, keyIds: ["Bcurrent"] },
+          { name: "m.cross_signing.user_signing", exists: true, keyIds: ["Bcurrent"] },
+          { name: "m.megolm_backup.v1", exists: true, keyIds: ["Bcurrent"] },
+        ],
+        backup: { exists: true, version: "3", algorithm: "m.megolm.v1.aes-sha2", count: 7 },
+        hasPassphraseDerivedKey: true,
+        staleEntries: false,
+        headline:
+          "Your passphrase protects key Element security key. If it was made in Element, it is what Element asks for under Settings → Security & Privacy.",
+        notes: [],
+      } as unknown as SecurityAccountDescription;
     },
     onIncomingRequest(_c, cb) {
       incomingCb = cb;
@@ -595,5 +634,66 @@ describe("W5a room wiring", () => {
     const help = await screen.findByTestId("utd-help");
     fireEvent.click(help);
     expect(await screen.findByTestId("security-sheet")).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W23 locked-out UX — center wiring (reset entry + diagnostics)
+
+describe("W23 locked-out center wiring", () => {
+  const lockedSsssStatus: SecurityStatus = {
+    cryptoAvailable: true,
+    ready: false,
+    ssssReady: true,
+    crossSigningReady: false,
+    backupEnabled: true,
+    backupCount: 0,
+  };
+
+  it("locked SSSS account offers the reset entry; impact screen gates the form behind 'I understand'; success shows the new key once", async () => {
+    const adapter = mockAdapter({ status: async () => lockedSsssStatus });
+    render(<SecuritySheet client={anyClient} adapter={adapter} onClose={() => undefined} />);
+    await screen.findByTestId("start-reset");
+    fireEvent.click(screen.getByTestId("start-reset"));
+
+    await screen.findByTestId("reset-confirm");
+    expect(screen.getByTestId("reset-impact").textContent).toMatch(/will NOT be recoverable/);
+    const go = screen.getByTestId("reset-continue") as HTMLButtonElement;
+    expect(go.disabled).toBe(true); // honest impact list must be acknowledged first
+    fireEvent.click(screen.getByTestId("reset-understand"));
+    expect(go.disabled).toBe(false);
+    fireEvent.click(go);
+
+    await screen.findByTestId("reset-form");
+    const submit = screen.getByTestId("reset-go") as HTMLButtonElement;
+    expect(submit.disabled).toBe(true);
+    fireEvent.change(screen.getByTestId("reset-password"), { target: { value: "acct-pw" } });
+    fireEvent.change(screen.getByTestId("reset-pass1"), { target: { value: "short" } });
+    fireEvent.change(screen.getByTestId("reset-pass2"), { target: { value: "short" } });
+    expect(submit.disabled).toBe(true); // min 8 still enforced in the UI
+    fireEvent.change(screen.getByTestId("reset-pass1"), { target: { value: "brand new phrase" } });
+    fireEvent.change(screen.getByTestId("reset-pass2"), { target: { value: "brand new phrase" } });
+    expect(submit.disabled).toBe(false);
+    fireEvent.click(submit);
+
+    await screen.findByTestId("reset-showkey");
+    expect(screen.getByTestId("reset-showkey").textContent).not.toMatch(/acct-pw|brand new phrase/); // no secrets re-shown
+    expect((document.querySelector('[data-testid="reset-showkey"] textarea') as HTMLTextAreaElement).value).toBe("BrandNew Recov eryK ey4321");
+    fireEvent.click(screen.getByTestId("reset-ack"));
+    await screen.findByTestId("security-status"); // back to the center overview
+    expect(adapter.calls).toContain("reset:brand new phrase");
+  });
+
+  it("diagnostics disclosure renders the core headline + list in the center", async () => {
+    const adapter = mockAdapter({ status: async () => lockedSsssStatus });
+    render(<SecuritySheet client={anyClient} adapter={adapter} onClose={() => undefined} />);
+    fireEvent.click(await screen.findByTestId("show-diagnostics"));
+    await screen.findByTestId("security-diagnostics");
+    expect(screen.getByTestId("diag-headline").textContent).toMatch(
+      /Your passphrase protects key Element security key/,
+    );
+    expect(screen.getByTestId("diag-key-Bcurrent").textContent).toMatch(/passphrase-derived \(PBKDF2, 500000 iterations\)/);
+    expect(screen.getByTestId("diag-backup").textContent).toMatch(/version 3/);
+    expect(adapter.calls).toContain("describe");
   });
 });

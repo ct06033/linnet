@@ -32,7 +32,8 @@ import {
   unlockInitial, unlockReduce, type UnlockStep,
   probeStatus, type SecurityStatus, autoPassphrase,
 } from "./state.js";
-import { mapSecretStorageError } from "./gate.js";
+import { mapSecretStorageError, ResetSecurityPanel, SecurityDiagnostics } from "./gate.js";
+import type { SecurityAccountDescription } from "@linnet/core";
 
 export interface SecurityAdapter {
   bootstrap(opts: { client: MatrixClient; userId: string; password: string; passphrase: string }): Promise<string>;
@@ -50,6 +51,22 @@ export interface SecurityAdapter {
     secret: { passphrase: string } | { recoveryKey: string };
     onProgress: (p: { total?: number; imported?: number }) => void;
   }): Promise<number>;
+  /**
+   * W23-B DESTRUCTIVE reset for the locked-out account (passphrase AND
+   * recovery key both gone): rotates 4S to a NEW passphrase-derived key,
+   * re-bootstraps a NEW cross-signing identity (UIA with the account
+   * password), replaces the server key backup, and returns the NEW recovery
+   * key (one-time view). NOT a recovery — old SSSS history stays gone.
+   * Core: resetSecurityAccess.
+   */
+  resetSecurity(opts: { client: MatrixClient; userId: string; password: string; passphrase: string }): Promise<{ recoveryKey: string }>;
+  /**
+   * W23-D: "what your account actually has" — server-first reads of the 4S
+   * key descriptions, the four secrets' guarding key ids and the backup
+   * version, mapped to an actionable head-line. NO secret values ever.
+   * Core: describeSecurityAccount.
+   */
+  describeAccount(client: MatrixClient): Promise<SecurityAccountDescription>;
   status(client: MatrixClient): Promise<SecurityStatus>;
   runBackup(client: MatrixClient): Promise<void>;
   sessions(client: MatrixClient): Promise<SessionRow[]>;
@@ -150,7 +167,9 @@ export interface SheetProps {
 export function SecuritySheet(props: SheetProps): ReactNode {
   const { client, adapter, onClose } = props;
   const [status, setStatus] = useState<SecurityStatus | null>(null);
-  const [flow, setFlow] = useState<"none" | "setup" | "recover" | "unlock" | "sessions">("none");
+  const [flow, setFlow] = useState<"none" | "setup" | "recover" | "unlock" | "reset" | "sessions">("none");
+  // W23-D disclosure in the center (always available while not ready)
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [verify, setVerify] = useState<VerifyHandle | null>(null);
   const [incoming, setIncoming] = useState(false);
 
@@ -205,9 +224,9 @@ export function SecuritySheet(props: SheetProps): ReactNode {
             </div>
 
             {status?.cryptoAvailable && status.ready === false && status.ssssReady && (
-              // W14: account ALREADY has SSSS — offering the setup wizard here
-              // is exactly what crashed on "getSecretStorageKey callback
-              // returned falsey". Route to unlock-session instead.
+              // W14: account ALREADY has Secure Secret Storage — offering the
+              // setup wizard here is exactly what crashed on "getSecretStorageKey
+              // callback returned falsey". Route to unlock-session instead.
               <div className="unlock-nudge hc" data-contrast="wcag" data-position="center" data-testid="ssss-warning">
                 <p>
                   Your account already has Secure Secret Storage, but this session is locked. Enter your
@@ -216,8 +235,19 @@ export function SecuritySheet(props: SheetProps): ReactNode {
                 <button className="primary" onClick={() => setFlow("unlock")} data-testid="unlock-session">
                   Unlock session
                 </button>
+                {/* W23-B center entry — destructive, fully confirm-gated inside */}
+                <button className="linkbtn danger" onClick={() => setFlow("reset")} data-testid="start-reset">
+                  Forgot both? Reset your security access
+                </button>
               </div>
             )}
+            {status?.cryptoAvailable && status.ready === false && (
+              // W23-D: the account readout is always available here too
+              <button className="linkbtn" onClick={() => setShowDiagnostics((v) => !v)} data-testid="show-diagnostics">
+                {showDiagnostics ? "Hide account details" : "What does my account have? Show details"}
+              </button>
+            )}
+            {showDiagnostics && <SecurityDiagnostics client={client} adapter={adapter} />}
             {status?.cryptoAvailable && status.ready === false && !status.ssssReady && (
               <button className="primary" onClick={() => setFlow("setup")} data-testid="start-setup">
                 Set up encryption
@@ -238,6 +268,14 @@ export function SecuritySheet(props: SheetProps): ReactNode {
         {flow === "setup" && <SetupWizard client={client} adapter={adapter} onDone={() => { setFlow("none"); refresh(); }} />}
         {flow === "recover" && <RecoverFlow client={client} adapter={adapter} onDone={() => setFlow("none")} />}
         {flow === "unlock" && <UnlockFlow client={client} adapter={adapter} onDone={() => { setFlow("none"); refresh(); }} />}
+        {flow === "reset" && (
+          <ResetSecurityPanel
+            client={client}
+            adapter={adapter}
+            onDone={() => { setFlow("none"); refresh(); }}
+            onCancel={() => setFlow("none")}
+          />
+        )}
         {flow === "sessions" && (
           verify ? (
             <SasPanel handle={verify} incoming={incoming} onDone={() => { setVerify(null); setIncoming(false); }} />

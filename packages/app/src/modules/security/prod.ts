@@ -6,6 +6,8 @@
 import type { MatrixClient } from "matrix-js-sdk";
 import {
   bootstrapSecurity,
+  describeSecurityAccount,
+  resetSecurityAccess,
   restoreBackupWithPassphrase,
   restoreBackupWithRecoveryKey,
   unlockWithSecret,
@@ -124,6 +126,16 @@ export const prodAdapter: SecurityAdapter = {
     const r = await unlockWithSecret({ client, secret, onProgress });
     return r.imported;
   },
+  // W23-B: DESTRUCTIVE locked-out reset -> core resetSecurityAccess (rotate
+  // 4S to a new passphrase-derived key, NEW cross-signing identity behind
+  // UIA-with-identifier, replace the server backup). The UI already forced
+  // the honest impact screen; wrong-password/UIA rejections propagate
+  // verbatim from core — no wrapping here either.
+  async resetSecurity(opts) {
+    return await resetSecurityAccess(opts);
+  },
+  // W23-D: account readout (server-first reads, no secret values ever).
+  describeAccount: (client) => describeSecurityAccount(client),
   status: async (client) =>
     probeStatus(client as unknown as Parameters<typeof probeStatus>[0], tokenOf(client)),
   async runBackup(client) {

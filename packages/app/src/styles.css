@@ -740,3 +740,15 @@ button.section-toggle {
 .gate-actions { display: flex; gap: 10px; margin-top: 14px; }
 .gate-key { width: 100%; font-family: ui-monospace, monospace; font-size: 13px; padding: 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-alt); color: var(--fg); }
 .linkbtn { background: none; border: 0; color: var(--accent); cursor: pointer; padding: 0; font-size: 13px; }
+/* W23 locked-out UX: login-password affordance, reset entry + panel, diagnostics */
+.gate-links { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
+.linkbtn.danger, button.linkbtn.danger { color: var(--danger); }
+.reset-panel { display: flex; flex-direction: column; gap: 6px; }
+.gate-list { margin: 8px 0 12px; padding-left: 20px; display: flex; flex-direction: column; gap: 8px; color: var(--fg-dim); font-size: 13px; line-height: 1.5; }
+.gate-check { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--fg); margin: 6px 0 4px; }
+.gate-check input { width: 16px; height: 16px; accent-color: var(--danger); }
+.sec-diag { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.diag-headline { color: var(--fg); }
+.diag-note { font-style: italic; }
+.diag-list { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--fg-dim); }
+.diag-list code { font-family: ui-monospace, monospace; font-size: 12px; }

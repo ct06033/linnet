@@ -32,6 +32,18 @@ export function createClientSession(opts: SessionOptions): MatrixClient {
   // when bootstrapCrossSigning imported from 4S. Single-SSSS-key product
   // assumption: match the advertised key id (default key preferred; re-key
   // flows land later).
+  //
+  // W22 SINGLE-SHOT LIMITATION (documented, deliberately not fixed here):
+  // ServerSideSecretStorageImpl.get() asks this callback ONCE and decrypts
+  // ONLY secretInfo.encrypted[keyId] for the keyId we return — no retry, no
+  // excludes, anywhere in the SDK (secret-storage.js:303). So SDK-internal
+  // fetches (bootstrapCrossSigning's m.cross_signing.* imports) can still hit
+  // a stale-entry bad MAC if pickSsssKeyId's answer isn't the entry the user's
+  // key actually encrypts. Linnet's OWN unlock/restore paths bypass sss.get
+  // entirely via e2ee.decryptSecretWithKey (tries every copy), and the prove-
+  // step runs BEFORE bootstrapCrossSigning — so by the time this callback
+  // serves a key, the key has already authenticated against at least one
+  // secret. Do NOT try to make the SDK internals retry from here.
   let self: MatrixClient;
   // js-sdk 45 reads clientOpts.threadSupport in the CONSTRUCTOR (client.js:652
   // + getter ~7099) but declares the field only on IStartClientOpts — a typing
@@ -46,7 +58,7 @@ export function createClientSession(opts: SessionOptions): MatrixClient {
     cryptoCallbacks: {
       getSecretStorageKey: async ({ keys }: { keys: Record<string, unknown> }, _name: string) => {
         const privateKey = self ? getBootstrapKey(self) ?? getUnlockedSsssKey(self) : undefined;
-        const keyId = self ? pickSsssKeyId(self, keys) : undefined;
+        const keyId = self ? await pickSsssKeyId(self, keys) : undefined;
         return privateKey && keyId ? [keyId, privateKey] : null;
       },
     },

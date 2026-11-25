@@ -6,8 +6,11 @@
 import type { MatrixClient } from "matrix-js-sdk";
 import {
   bootstrapSecurity,
+  describeSecurityAccount,
+  resetSecurityAccess,
   restoreBackupWithPassphrase,
   restoreBackupWithRecoveryKey,
+  rotateRecoveryMethod,
   unlockWithSecret,
 } from "@linnet/core";
 import type { SecurityAdapter, SasEntry, SessionRow, VerifyHandle } from "./Security.js";
@@ -124,6 +127,24 @@ export const prodAdapter: SecurityAdapter = {
     const r = await unlockWithSecret({ client, secret, onProgress });
     return r.imported;
   },
+  // W23-B: DESTRUCTIVE locked-out reset -> core resetSecurityAccess (rotate
+  // 4S to a new passphrase-derived key, NEW cross-signing identity behind
+  // UIA-with-identifier, replace the server backup). The UI already forced
+  // the honest impact screen; wrong-password/UIA rejections propagate
+  // verbatim from core — no wrapping here either.
+  async resetSecurity(opts) {
+    return await resetSecurityAccess(opts);
+  },
+  // W24 ROUTE E: NON-destructive recovery-method rotation -> core
+  // rotateRecoveryMethod (prove old, set new passphrase, re-wrap 4S, import
+  // cross-signing from the NEW 4S, restore history). Identity preserved,
+  // no UIA, no account password. Raw decryption errors mapped in the UI via
+  // mapSecretStorageError; everything else propagates verbatim.
+  async rotateRecovery({ client, userId, secret, passphrase, onProgress }) {
+    return await rotateRecoveryMethod({ client, userId, secret, newPassphrase: passphrase, onProgress });
+  },
+  // W23-D: account readout (server-first reads, no secret values ever).
+  describeAccount: (client) => describeSecurityAccount(client),
   status: async (client) =>
     probeStatus(client as unknown as Parameters<typeof probeStatus>[0], tokenOf(client)),
   async runBackup(client) {

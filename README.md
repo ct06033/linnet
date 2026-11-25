@@ -4,6 +4,21 @@ A Matrix chat client that sits **between [Element](https://element.io) and [Cinn
 calmer than Element, more capable than Cinny. Desktop-first for **Windows and Linux**, built as a
 vanilla TypeScript renderer inside an Electron shell.
 
+> **v0.2.5** is the encryption unlock release — for everyone whose account already
+> existed before Linnet. The recovery-key screen now decrypts **every copy** of your
+> secrets, not just the first one: accounts that went through key or passphrase changes
+> in Element used to fail with `bad MAC` even when you typed the correct credential —
+> root-caused in the SDK's single-shot secret fetch and fixed, with a live test that
+> reproduces the exact stale-key archaeology. New doors for locked-out users: try your
+> **login password** as the security passphrase (Element used to default to that);
+> **rotate** with your recovery key to set a new passphrase — non-destructive, decrypts
+> your history now, identity untouched (proven: the cross-signing master key is verified
+> byte-identical before/after); a full **reset** via account password when you have
+> nothing, with a blunt honest screen about what that costs (old backed-up history goes);
+> and after any failed attempt, a **diagnostics panel** that explains what your account
+> actually contains instead of making you guess. Raw SDK errors are gone from every
+> security screen.
+
 > **v0.2.4** is the group-call + polish release: **group calls now connect** — the widget
 > host answered the API-version handshake with a field `matrix-widget-api` never reads,
 > so Element Call crashed on startup into a blank iframe (root-caused live against the
@@ -40,9 +55,9 @@ Grab an installer from the [latest release](https://github.com/ct06033/linnet/re
 
 | Platform | File | Install |
 |---|---|---|
-| Windows 10/11 x64 | `Linnet-0.2.4-win-x64.exe` | NSIS installer (per-user, choose folder) |
-| Debian/Ubuntu x64 | `Linnet-0.2.4-linux-amd64.deb` | `sudo apt install ./Linnet-0.2.4-linux-amd64.deb` |
-| Any Linux x64 | `Linnet-0.2.4-linux-x86_64.AppImage` | `chmod +x`, run |
+| Windows 10/11 x64 | `Linnet-0.2.5-win-x64.exe` | NSIS installer (per-user, choose folder) |
+| Debian/Ubuntu x64 | `Linnet-0.2.5-linux-amd64.deb` | `sudo apt install ./Linnet-0.2.5-linux-amd64.deb` |
+| Any Linux x64 | `Linnet-0.2.5-linux-x86_64.AppImage` | `chmod +x`, run |
 
 ## What's in (MVP)
 

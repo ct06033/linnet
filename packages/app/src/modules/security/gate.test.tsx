@@ -6,7 +6,8 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { MatrixClient } from "matrix-js-sdk";
-import { SecurityGate } from "./gate.js";
+import type { SecurityAccountDescription } from "@linnet/core";
+import { SecurityGate, mapSecretStorageError } from "./gate.js";
 import type { SecurityAdapter } from "./Security.js";
 import type { SecurityStatus } from "./state.js";
 
@@ -16,6 +17,8 @@ interface Script {
   s: SecurityStatus;
   bootstrapArgs: { password: string; passphrase: string }[];
   unlockSecrets: ({ passphrase: string } | { recoveryKey: string })[];
+  resetArgs?: { password: string; passphrase: string }[];
+  desc?: SecurityAccountDescription | null;
 }
 
 function gate(script: Script): { adapter: SecurityAdapter; onSignOut: ReturnType<typeof vi.fn> } {
@@ -32,6 +35,15 @@ function gate(script: Script): { adapter: SecurityAdapter; onSignOut: ReturnType
       script.unlockSecrets.push(o.secret);
       script.s = { ...script.s, ready: true, crossSigningReady: true };
       return 12;
+    },
+    async resetSecurity(o: { password: string; passphrase: string }) {
+      (script.resetArgs ??= []).push({ password: o.password, passphrase: o.passphrase });
+      script.s = { ...script.s, ready: true, ssssReady: true, crossSigningReady: true, backupEnabled: true };
+      return { recoveryKey: "NewE recovery key4321" };
+    },
+    async describeAccount() {
+      if (script.desc) return script.desc;
+      return descFixture();
     },
     restorePassphrase: async () => 0,
     restoreRecoveryKey: async () => 0,
@@ -56,6 +68,41 @@ const fresh = (over: Partial<SecurityStatus> = {}): SecurityStatus => ({
   backupCount: null,
   ...over,
 });
+
+/** W23-D default composed readout (rule-2 shape) for the scripted adapter */
+function descFixture(
+  over: Partial<SecurityAccountDescription> & { headline?: string } = {},
+): SecurityAccountDescription {
+  const base: SecurityAccountDescription = {
+    homeserver: "https://hs.test",
+    userId: "@alice:hs.test",
+    defaultKeyId: "Bcurrent",
+    keys: [
+      {
+        keyId: "Bcurrent",
+        isDefault: true,
+        algorithm: "m.secret_storage.v1.aes-hmac-sha2",
+        name: "Element security key",
+        passphraseDerived: true,
+        pbkdf2Iterations: 500000,
+        guardsSecrets: ["m.cross_signing.master", "m.megolm_backup.v1"],
+      },
+    ],
+    secrets: [
+      { name: "m.cross_signing.master", exists: true, keyIds: ["Bcurrent"] },
+      { name: "m.cross_signing.self_signing", exists: true, keyIds: ["Bcurrent"] },
+      { name: "m.cross_signing.user_signing", exists: true, keyIds: ["Bcurrent"] },
+      { name: "m.megolm_backup.v1", exists: true, keyIds: ["Bcurrent"] },
+    ],
+    backup: { exists: true, version: "3", algorithm: "m.megolm.v1.aes-sha2", count: 7 },
+    hasPassphraseDerivedKey: true,
+    staleEntries: false,
+    headline:
+      "Your passphrase protects key Element security key. If it was made in Element, it is what Element asks for under Settings → Security & Privacy.",
+    notes: [],
+  };
+  return { ...base, ...over } as SecurityAccountDescription;
+}
 
 function mount(script: Script) {
   const { adapter, onSignOut } = gate(script);
@@ -194,5 +241,45 @@ describe("W21-HOTFIX gate routing after Sean's prod report (11-24)", () => {
     const inp = document.querySelector<HTMLInputElement>(".gate-dialog input");
     expect(inp?.type).toBe("text");
     expect(document.querySelector(".gate-dialog")?.textContent).toMatch(/Groups of 4 characters/);
+  });
+});
+
+describe("W22 raw SDK crypto errors never surface (Sean prod: bad MAC verbatim in 0.2.4)", () => {
+  it("mapSecretStorageError maps the decryption-failure family; everything else passes through verbatim", () => {
+    expect(mapSecretStorageError("Error decrypting secret m.megolm_backup.v1: bad MAC")).toMatch(
+      /doesn't match any copy of your secrets/,
+    );
+    expect(
+      mapSecretStorageError("Could not decrypt m.cross_signing.master because none of the keys are for a supported algorithm"),
+    ).toMatch(/Try the other option/);
+    // honesty rule: wrong-password and our own actionable copy survive unwrapped
+    expect(mapSecretStorageError("Invalid password")).toBe("Invalid password");
+    expect(mapSecretStorageError("wrong passphrase or recovery key")).toBe("wrong passphrase or recovery key");
+  });
+
+  it("gate unlock error step shows the actionable copy instead of the raw bad-MAC string", async () => {
+    const adapter = {
+      status: async () => ({
+        cryptoAvailable: true,
+        ready: false,
+        ssssReady: true,
+        crossSigningReady: false,
+        backupEnabled: true,
+        backupCount: 5,
+      }),
+      bootstrap: async () => "x",
+      unlock: async () => {
+        throw new Error("Error decrypting secret m.megolm_backup.v1: bad MAC");
+      },
+      restorePassphrase: async () => 0,
+    } as unknown as SecurityAdapter;
+    render(<SecurityGate client={anyClient} adapter={adapter} onSignOut={() => undefined} />);
+    await screen.findByText("Unlock your encrypted history");
+    fireEvent.change(screen.getByLabelText(/^security passphrase$/i), { target: { value: "stale key attempt" } });
+    fireEvent.click(screen.getByRole("button", { name: /unlock my history/i }));
+    await screen.findByText(/couldn.t continue/i);
+    const dialog = document.querySelector(".gate-dialog");
+    expect(dialog?.textContent).toMatch(/doesn't match any copy of your secrets/);
+    expect(dialog?.textContent).not.toMatch(/bad MAC/);
   });
 });
